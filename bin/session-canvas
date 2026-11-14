@@ -1,0 +1,115 @@
+#!/bin/zsh
+# Session Canvas: one board with every Claude Code session on this Mac. Runs only on this Mac (127.0.0.1).
+#   session-canvas              start it (or reuse the one already running) and open it in the browser
+#   session-canvas stop         stop it          · status   = is it running?   · restart
+#   session-canvas setup        open the board with the setup wizard
+#   session-canvas uninstall    remove the app (asks before deleting your board data)
+#   session-canvas version      print the version
+#   options: --dry-run (test mode: buttons only show the command) · --no-open (don't open the browser) · --port N
+
+set -u
+SELF=${0:A}
+APP_HOME=${SESSION_CANVAS_HOME:-${SELF:h:h}}               # the install folder (…/bin/session-canvas → …)
+APP="$APP_HOME/app"
+DATA=${SESSION_CANVAS_DATA:-$APP_HOME/data}
+CACHE="$DATA/cache"
+INFO="$CACHE/server.json"
+LOG="$CACHE/server.log"
+PY=/usr/bin/python3
+LABEL=com.sessioncanvas.server
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+CMD=start; DRY=0; OPEN=1; PORTARG=${CANVAS_PORT:-7788}; YES=0
+while (( $# )); do
+  case $1 in
+    start|stop|status|restart|setup|uninstall|version) CMD=$1 ;;
+    --dry-run) DRY=1 ;;
+    --no-open) OPEN=0 ;;
+    --yes|-y) YES=1 ;;
+    --port) shift; PORTARG=${1:-7788} ;;
+    -h|--help|help) sed -n '2,8p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) print -u2 "session-canvas: don't know '$1' (try: session-canvas --help)"; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ $CMD == version ]]; then cat "$APP_HOME/VERSION" 2>/dev/null || print "unknown"; exit 0; fi
+if [[ $CMD == uninstall ]]; then
+  [[ -x $APP_HOME/uninstall.sh ]] || { print -u2 "session-canvas: uninstall.sh not found in $APP_HOME"; exit 1; }
+  if (( YES )); then exec "$APP_HOME/uninstall.sh" --yes; else exec "$APP_HOME/uninstall.sh"; fi
+fi
+[[ -x $PY ]] || { print -u2 "session-canvas: /usr/bin/python3 is missing. Run: xcode-select --install"; exit 1; }
+[[ -f $APP/server.py ]] || { print -u2 "session-canvas: the app is not at $APP. Reinstall with ./install.sh"; exit 1; }
+[[ $PORTARG == <1024-65535> ]] || { print -u2 "session-canvas: --port must be a number from 1024 to 65535"; exit 2; }
+mkdir -p "$CACHE"
+
+PID=0; PORT=0; WASDRY=0
+read_info() {
+  local out
+  out=$($PY -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(int(d.get("pid", 0)), int(d.get("port", 0)), int(bool(d.get("dryRun"))))
+except Exception:
+    print(0, 0, 0)' "$INFO" 2>/dev/null)
+  PID=${${(z)out}[1]:-0}; PORT=${${(z)out}[2]:-0}; WASDRY=${${(z)out}[3]:-0}
+}
+running() {
+  read_info
+  (( PID > 0 && PORT > 0 )) || return 1
+  kill -0 $PID 2>/dev/null || return 1
+  curl -s -m 3 "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q '"app":"session-canvas"'
+}
+autostart_loaded() { [[ -f $PLIST ]] && launchctl list 2>/dev/null | grep -q "$LABEL"; }
+stop_it() {
+  autostart_loaded && launchctl unload "$PLIST" 2>/dev/null          # otherwise launchd starts it again
+  if running; then
+    kill $PID 2>/dev/null
+    for i in {1..40}; do kill -0 $PID 2>/dev/null || break; sleep 0.1; done
+    kill -0 $PID 2>/dev/null && kill -9 $PID 2>/dev/null
+    rm -f "$INFO"
+    print -r -- "Session Canvas stopped."
+  else
+    rm -f "$INFO"
+    print -r -- "Session Canvas was not running."
+  fi
+}
+start_it() {
+  [[ -f $LOG && $(stat -f%z "$LOG" 2>/dev/null || echo 0) -gt 2000000 ]] && : > "$LOG"
+  rm -f "$INFO"
+  if (( ! DRY )) && [[ -f $PLIST ]] && [[ $PORTARG == 7788 ]]; then
+    launchctl load "$PLIST" 2>/dev/null                               # autostart is on: launchd owns the process
+  else
+    local args=(--port $PORTARG --state "$DATA/state.json" --cache "$CACHE")
+    (( DRY )) && args+=(--dry-run)
+    (
+      # Sessions opened from the board must be their own top-level sessions, even when this runs inside Claude.
+      for v in ${(k)parameters[(I)CLAUDE*]} AI_AGENT; do [[ $v == CLAUDE_CODE_PLUGIN_DIRS ]] || unset $v; done
+      cd "$APP" && nohup $PY "$APP/server.py" $args >> "$LOG" 2>&1 &!
+    )
+  fi
+  for i in {1..120}; do running && return 0; sleep 0.15; done
+  print -u2 "Session Canvas did not start. Last lines of $LOG:"; tail -5 "$LOG" >&2
+  return 1
+}
+
+case $CMD in
+  stop) stop_it; exit 0 ;;
+  status)
+    if running; then print -r -- "Session Canvas is running: http://127.0.0.1:$PORT/  (pid $PID$( (( WASDRY )) && print -n ', test mode'))"; exit 0
+    else print -r -- "Session Canvas is not running. Start it with: session-canvas"; exit 1; fi ;;
+  restart) stop_it >/dev/null ;;
+esac
+
+if running; then
+  if (( DRY != WASDRY )); then stop_it >/dev/null; start_it || exit 1; STARTED="restarted"
+  else STARTED="already running"; fi
+else
+  start_it || exit 1; STARTED="started"
+fi
+read_info
+URL="http://127.0.0.1:$PORT/"
+[[ $CMD == setup ]] && URL="${URL}?setup=1"
+print -r -- "Session Canvas $STARTED: $URL$( (( WASDRY )) && print -n '   (test mode: nothing really opens)')"
+(( OPEN )) && open "$URL"
+exit 0

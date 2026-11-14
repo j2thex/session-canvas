@@ -1,0 +1,15 @@
+# Personal data and generated files: never committed, never shipped.
+__pycache__/
+*.pyc
+.cache/
+data/
+state.json
+state.json.*
+*.log
+app/tests/screenshots/
+dist/
+.DS_Store
+screenshots/
+*.bak
+*.command
+.state/
