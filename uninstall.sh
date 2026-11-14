@@ -6,6 +6,9 @@
 #   uninstall.sh --purge  also delete the board data without asking
 set -u
 DEST=${SESSION_CANVAS_HOME:-${0:A:h}}
+# Run from the unzipped download folder (it has install.sh): remove the installed copy, not the download.
+[[ -z ${SESSION_CANVAS_HOME:-} && -f $DEST/install.sh ]] && DEST=$HOME/.session-canvas
+DEST=${DEST:A}
 YES=0; PURGE=0
 for a in "$@"; do
   case $a in --yes|-y) YES=1 ;; --purge) PURGE=1; YES=1 ;; *) print -u2 "uninstall.sh: don't know '$a'"; exit 2 ;; esac
@@ -15,7 +18,8 @@ LABEL=com.sessioncanvas.server
 PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
 SESSION_CANVAS_HOME=$DEST "$DEST/bin/session-canvas" stop >/dev/null 2>&1
 if [[ -f $PLIST ]]; then launchctl unload "$PLIST" 2>/dev/null; rm -f "$PLIST"; fi
-[[ -L $HOME/.local/bin/session-canvas ]] && rm -f "$HOME/.local/bin/session-canvas"
+LINK=$HOME/.local/bin/session-canvas          # remove the command only if it is this install's (or points nowhere)
+[[ -L $LINK && ( $(readlink "$LINK") == $DEST/bin/session-canvas || ! -e $LINK ) ]] && rm -f "$LINK"
 rm -rf "$DEST/app" "$DEST/bin" "$DEST/VERSION" "$DEST/README.md" "$DEST/LICENSE" "$DEST/CHANGELOG.md"
 keep=1
 if (( PURGE )); then keep=0

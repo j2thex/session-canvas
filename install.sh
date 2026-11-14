@@ -47,7 +47,8 @@ print -r -- ""
 
 # 1. checks
 [[ $(uname -s) == Darwin ]] || die "Session Canvas runs on macOS only."
-[[ -x $PY ]] || die "/usr/bin/python3 is missing. Run: xcode-select --install   then run ./install.sh again."
+# On a brand-new Mac /usr/bin/python3 is only a placeholder until Apple's Command Line Tools are installed.
+[[ -x $PY ]] && xcode-select -p >/dev/null 2>&1 || die "Python 3 is not set up on this Mac yet. Run: xcode-select --install   (a box appears: click Install and wait a few minutes), then run ./install.sh again."
 $PY -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null || die "Python 3.9 or newer is needed (/usr/bin/python3 is older). Update macOS or the Command Line Tools."
 ok "macOS and Python $($PY -c 'import platform; print(platform.python_version())')"
 [[ -f $SRC/app/server.py && -f $SRC/bin/session-canvas ]] || die "Run this from the unzipped Session Canvas folder (app/ and bin/ are missing here)."
@@ -96,6 +97,7 @@ if [[ ":$PATH:" != *":$BIN:"* ]]; then
   if grep -qs 'session-canvas: PATH' "$RC"; then
     say "Open a new terminal window to use the session-canvas command."
   elif ask "Add $BIN to your PATH (one line at the end of ~/.zshrc)?" y; then
+    [[ -s $RC && -n $(tail -c1 "$RC") ]] && print >> "$RC"        # the file did not end with a new line
     print -r -- 'export PATH="$HOME/.local/bin:$PATH"   # session-canvas: PATH' >> "$RC"
     ok "Added to ~/.zshrc. Open a new terminal window to use the session-canvas command."
   else

@@ -275,6 +275,18 @@ class Endpoints(ApiCase):
             self.assertEqual(self.post('/api/spawn', {'action': 'new'}, headers={'Host': host})[0], 403, host)
         self.assertEqual(self.get('/api/health', headers={'Host': 'localhost:%d' % self.port})[0], 200)
 
+    def test_other_websites_cannot_frame_it_or_inject_script(self):
+        c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=20)
+        c.request('GET', '/')
+        r = c.getresponse()
+        r.read()
+        c.close()
+        self.assertEqual(r.getheader('X-Frame-Options'), 'DENY')
+        csp = r.getheader('Content-Security-Policy') or ''
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertIn("default-src 'self'", csp)
+        self.assertNotIn('script-src', csp)                       # scripts fall back to 'self': no inline script runs
+
     def test_bad_requests_get_a_clear_answer(self):
         self.assertEqual(self.req('POST', '/api/state', raw=b'{not json')[0], 400)
         self.assertEqual(self.req('POST', '/api/state', raw=b'[1,2]')[0], 400)

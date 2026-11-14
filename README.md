@@ -23,7 +23,8 @@ said, and reopen any session in your terminal with one click.
 ## Install
 
 Needs: a Mac, and [Claude Code](https://docs.claude.com/claude-code) installed. Nothing else: no Homebrew,
-no pip, no Node. It uses the Python that comes with macOS (`/usr/bin/python3`).
+no pip, no Node. It uses Apple's own Python (`/usr/bin/python3`, part of Apple's Command Line Tools; if they are
+missing the installer tells you the one command to run: `xcode-select --install`).
 
 1. Unzip `session-canvas-<version>.zip` anywhere (Downloads is fine).
 2. In Terminal, go into that folder and run:
@@ -66,9 +67,10 @@ positions, settings in `~/.session-canvas/data`). Your Claude Code sessions (`~/
 ## Privacy and safety
 
 - **Everything stays on your Mac.** Nothing is sent to the internet; the page loads no outside resources.
-- The server listens on **127.0.0.1 only**, so other computers can't reach it.
+- The server listens on **127.0.0.1 only**, so other computers can't reach it. Other user accounts logged in on
+  the same Mac could open the address, so don't run it on a Mac you share with people you don't trust.
 - Every action that changes something or opens a window needs a secret token that only the open page knows,
-  and a same-origin check, so other websites can't press its buttons.
+  and a same-origin check, so other websites can't press its buttons or show the board inside their own page.
 - Claude Code's sessions are **read-only** to Session Canvas. It only writes its own data folder.
 - Notes you send to Claude are passed as a single argument from a file, never typed into a shell.
 

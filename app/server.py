@@ -106,6 +106,8 @@ def installed_terminals():
     return out or ['Terminal']
 SESSION_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 MAX_BODY = 8 * 1024 * 1024
+CSP = ("default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; "
+       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 MAX_NOTE = 100000
 
 STATE_KEYS = {
@@ -516,6 +518,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
+        # No other site may put the board in a frame (clickjacking), and the page runs only its own script files.
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Content-Security-Policy', CSP)
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -775,6 +780,10 @@ def main(argv=None):
     args = parse_args(argv)
     os.makedirs(args.cache, exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.state)), exist_ok=True)
+    try:                                # the cache holds the text of your sessions: this user only
+        os.chmod(args.cache, 0o700)
+    except OSError:
+        pass
     app = App(args)
     srv = make_server(app, args.port, auto_port=not args.strict_port)
     info_path = args.info or os.path.join(args.cache, 'server.json')

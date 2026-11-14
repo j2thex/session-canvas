@@ -6,6 +6,7 @@ cd ${0:A:h}
 [[ -z $(git status --porcelain) ]] || { print -u2 "make-release: commit or stash your changes first (git status)"; exit 1; }
 V=$(cat VERSION)
 NAME=session-canvas-$V
+grep -q "$NAME" SETUP-OTHER-MAC.md || { print -u2 "make-release: SETUP-OTHER-MAC.md does not mention $NAME (update the version in it)"; exit 1; }
 OUT=dist/$NAME-$(date +%Y%m%d).zip
 mkdir -p dist
 rm -f "$OUT"

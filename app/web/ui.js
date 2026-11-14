@@ -671,7 +671,7 @@
     const d = SC.data, lay = SC.lay;
     let links = 0;
     for (const e of (lay.edges || [])) { const a = SC.nodes.get(e.from), b = SC.nodes.get(e.to); if (a && b && a.vis && b.vis) links++; }
-    const save = SC.noSave ? 'Preview: changes are not saved' : SC.saveState === 'saving' ? 'Saving…' : SC.saveState === 'failed' ? '<span class="bad">Not saved. Is the Canvas still running? (scripts/canvas.sh)</span>' : 'All changes saved';
+    const save = SC.noSave ? 'Preview: changes are not saved' : SC.saveState === 'saving' ? 'Saving…' : SC.saveState === 'failed' ? '<span class="bad">Not saved. Is Session Canvas still running? (run: session-canvas)</span>' : 'All changes saved';
     $('status').innerHTML = '<span><b>' + lay.shown.length + '</b> of ' + d.sessions.length + ' sessions</span><span>' + links + ' links</span>' +
       (st().notes.length ? '<span>' + st().notes.length + (st().notes.length === 1 ? ' note' : ' notes') + '</span>' : '') +
       (st().hidden.length ? '<span>' + st().hidden.length + ' hidden</span>' : '') +
@@ -705,7 +705,7 @@
       if (p.indexedAt) SC.data.indexedAt = p.indexedAt;
     } catch (e) {
       serverDown = true;
-      if (manual) SC.toast('The Canvas server is not answering. Start it again with scripts/canvas.sh', { error: true });
+      if (manual) SC.toast('The Canvas server is not answering. Start it again: run session-canvas in a terminal', { error: true });
     }
     lastRefresh = Date.now();
     refreshing = false;

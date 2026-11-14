@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-PARSER_VERSION = 10
+PARSER_VERSION = 11
 
 # Commands that are housekeeping, not work: they never count as a prompt or as a "command used".
 HOUSEKEEPING = {
@@ -525,7 +525,7 @@ def parse_session(path):
                 relocated = d.get('relocatedCwd') or relocated
             elif t == 'frame-link':
                 fu = d.get('frameUrl')
-                if fu:
+                if isinstance(fu, str) and fu.startswith(('http://', 'https://')):
                     artifacts[fu] = d.get('title') or artifacts.get(fu) or ''
             elif t == 'cost-state':
                 c = d.get('totalCostUSD')
@@ -565,6 +565,8 @@ def parse_session(path):
         title, title_src = squash(first_prompt.split('\n', 1)[0] if not first_prompt.startswith('/') else first_prompt, 90), 'prompt'
     else:
         title, title_src = '(empty session)', 'none'
+    if not isinstance(title, str):          # a format change must not break the whole board
+        title = str(title)
 
     top_terms = terms.tf.most_common(240)
     tf = dict(top_terms)

@@ -1,17 +1,18 @@
 # Put Session Canvas on your other Mac
 
-You need: the zip (`session-canvas-1.0.0-<date>.zip`), and Claude Code already installed on the other Mac.
-Nothing else (no Homebrew, no downloads). It uses the Python that comes with macOS.
+You need: the zip (`session-canvas-1.0.1-<date>.zip`), and Claude Code already installed on the other Mac.
+Nothing else (no Homebrew). It uses Apple's own Python (`/usr/bin/python3`). If that Mac has never had Apple's
+Command Line Tools, the installer stops and tells you the one command to run first (`xcode-select --install`).
 
 ## 1. Copy the zip over (AirDrop)
 1. On this Mac, open Finder, go to the `dist` folder, right-click the zip → **Share** → **AirDrop**.
 2. Pick the other Mac. On the other Mac, click **Accept**. The zip lands in **Downloads**.
 
 ## 2. Unzip and install
-1. On the other Mac, double-click the zip in Downloads. You get a folder `session-canvas-1.0.0`.
+1. On the other Mac, double-click the zip in Downloads. You get a folder `session-canvas-1.0.1`.
 2. Open **Terminal** (Cmd+Space, type "Terminal", Enter) and paste these two lines:
    ```sh
-   cd ~/Downloads/session-canvas-1.0.0
+   cd ~/Downloads/session-canvas-1.0.1
    ./install.sh
    ```
    If it says "permission denied", run `zsh install.sh` instead.
