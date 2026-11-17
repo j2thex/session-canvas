@@ -53,11 +53,11 @@ def free_port(start):
 class Env(object):
     """A Canvas server in dry-run mode with its own state file and cache."""
 
-    def __init__(self, tmp, projects=None, root=None, port=None, wizard=False):
+    def __init__(self, tmp, projects=None, root=None, port=None, wizard=False, settings=None):
         self.tmp = tmp
         if not wizard:                                   # the first-run wizard is tested on its own (run_wizard)
             with open(os.path.join(tmp, 'state.json'), 'w') as fh:
-                json.dump({'version': 1, 'rev': 0, 'savedAt': 0, 'settings': {'setupDone': True}}, fh)
+                json.dump({'version': 1, 'rev': 0, 'savedAt': 0, 'settings': dict({'setupDone': True}, **(settings or {}))}, fh)
         self.port = port or free_port(7811)
         self.base = 'http://127.0.0.1:%d' % self.port
         self.state_path = os.path.join(tmp, 'state.json')
@@ -772,8 +772,11 @@ def run_wizard(tmp, b, shots, projects, demo):
         probs = b.problems()
         check('no JavaScript errors in the wizard', not probs, probs[:3])
         wait_saved(b, env)
-        b.js("location.href = 'about:blank'")         # leave the page before its server stops
-        b.sleep(0.5)
+        try:
+            b.js("location.href = 'about:blank'")     # leave the page before its server stops
+        except RuntimeError:
+            pass                                      # the page was already on its way out
+        time.sleep(0.5)
     finally:
         env.stop()
 
@@ -993,6 +996,283 @@ def run_stress(tmp, b, shots, n=1200):
         env.stop()
 
 
+def run_status(tmp, b, shots):
+    """v1.2 on a made-up day: where each card stands, the Status layout, the "Your turn" list, Done / Sent / Replaced by."""
+    import fixtures as fx
+    projects = os.path.join(tmp, 'st-projects')
+    work = os.path.realpath(os.path.join(tmp, 'st-work'))
+    now = int(time.time())
+    day = time.strftime('%Y-%m-%d', time.localtime(now))
+    rdir = os.path.join(work, 'reports', day)
+    os.makedirs(projects)
+    os.makedirs(rdir)
+    sub = os.path.join(tmp, 'status')
+    os.makedirs(sub)
+    ids, rows = {}, []
+
+    def helper(slug, name, mins_ago, report, prompt='Do the task'):
+        sid = fx.new_id()
+        ids[slug] = sid
+        fx.simple_session(projects, sid, now - mins_ago * 60 - 600, prompt + ' for ' + name, 'Working on ' + name + '. Report written.', cwd=work)
+        if report is not None:
+            path = os.path.join(rdir, slug + '.md')
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('status: %s\nname: W17·%s\n%s' % (report[0], name, report[1]))
+            os.utime(path, (now - mins_ago * 60, now - mins_ago * 60))
+            rows.append('%s\tW17·%s\tjob\tsonnet\tdraft\t10:30\t%s\n' % (sid[:8], name, path))
+        return sid
+
+    helper('robin-1-1', 'Robin 1:1 11:30', 190, ('your-turn', 'outcome: decisions 4–6 fixed on the page\nleft: Sam picks 1/2/3; helper writes on OK\n'))
+    helper('pricing-question', 'Northwind headcount columns', 35, ('question', 'outcome: two ways to map the payroll columns\nleft: A (one dataset) or B (two datasets)?\n'))
+    helper('tickets', 'Tickets from yesterday', 240, ('your-turn', 'outcome: Jira done (A–D written)\nleft: Sam sends the Slack draft in Mika\'s thread\n'))
+    helper('marta', 'Marta reply', 95, ('your-turn', 'outcome: reply drafted, double-checked\nleft: Sam reviews and sends the draft\n'))
+    helper('release-note', 'Dark mode release note', 50, ('your-turn', 'outcome: draft in Notion\nleft: Sam approves the wording\n'))
+    helper('academy-gif', 'Help-page GIF script', 12, ('your-turn', 'outcome: 6-step script ready\nleft: Sam records the GIF\n'))
+    helper('qa-run', 'Checkout QA round 2', 20, ('not-done', 'outcome: not done because 4 of 9 cases are still running\nleft: helper finishes the last cases\n'))
+    helper('hq', 'HQ · plan the day', 400, None, prompt='/morning')
+    helper('jira-sync', 'Jira sprint sync', 300, ('not-done', 'outcome: not done because the Jira connector timed out\nleft: run it again\n'))
+    helper('mixpanel', 'Analytics baseline', 1500, ('not-done', 'outcome: stopped: cohort 12345 returned no rows\nleft: check the customer filter\n'))
+    for i, (slug, name) in enumerate((('product-weekly', 'Product weekly 17 Nov'), ('cell-comments-qa', 'Dark mode QA'), ('genui-kickoff', 'Onboarding kickoff'),
+                                      ('tomas-rows', 'Tomas partner rows'), ('before-i-go', 'Before I go'), ('dana-review', 'Dana ABC-5493 review'),
+                                      ('northwind-prep', 'Northwind 17:00 prep'), ('deep-dive', 'Monthly review draft'), ('pb-notes', 'Feedback notes sort'),
+                                      ('dimension-spike', 'Search spike notes'), ('override-metrics', 'Signup metric check'))):
+        helper(slug, name, 70 + i * 55, ('done', 'outcome: done, %s\nleft: nothing\n' % ('posted in the thread', 'rows updated with screenshots', 'reply sent')[i % 3]))
+    helper('daily-follow-ups', 'Daily follow-ups', 420, ('your-turn', 'outcome: 4 texts wait on Sam\'s OK\nleft: Sam OKs Gero + Dana drafts\n'))
+    helper('away-handover', 'Away handover', 410, ('your-turn', 'outcome: v4 written\nleft: Sam fills the 1:1 slot → Sam sends\n'))
+    helper('overrides-go-live', 'Checkout go-live', 405, ('your-turn', 'outcome: draft ready\nleft: Sam says yes to the draft\nreplaced-by: robin-alignment\n'))
+    helper('robin-alignment', 'Robin alignment', 150, ('done', 'outcome: done, C1–C7 sent\nleft: nothing\nreplaces: daily-follow-ups, away-handover\n'))
+    helper('mika', 'Mika thread answer', 260, ('your-turn', 'outcome: draft saved in Slack\nleft: Sam sends it\n\nsent: https://example.slack.com/archives/C0000000001/p1794851438924769\n'))
+    with open(os.path.join(rdir, 'runs.tsv'), 'w', encoding='utf-8') as fh:
+        fh.writelines(rows)
+
+    # status reports are an Advanced setting: on only because this board is told where the report files are
+    env = Env(sub, projects=projects, root=work)
+    try:
+        for i, slug in enumerate(('qa-run', 'hq')):                # two sessions that are open in a window right now
+            with open(os.path.join(env.live_dir, '%d.json' % (1 if i == 0 else os.getpid())), 'w') as fh:
+                json.dump({'pid': 1 if i == 0 else os.getpid(), 'sessionId': ids[slug], 'status': 'busy', 'kind': 'interactive', 'startedAt': now * 1000}, fh)
+        b.events = []
+        ok = b.goto(env.base + '/?debug=1&still=1')
+        # status reports are an Advanced setting: off until the board is told where the report files are
+        b.js('SC.refreshLive()', wait=True)
+        settle(b, 0.3)
+        off = b.js("({tab: document.querySelector('#layouts button[data-layout=status]').hidden, btn: document.getElementById('btnWait').hidden, "
+                   "keys: Array.from(new Set(SC.data.sessions.map(s => SC.stateOf(s).key))).sort().join(',')})")
+        b.key('4')
+        b.key('w')
+        b.sleep(0.2)
+        check('status is off by default: no Status tab, no Your-turn button, 4 and W do nothing, cards only show "running"',
+              ok and off['tab'] and off['btn'] and off['keys'] == ',running' and summary(b)['layout'] == 'tree' and b.js("document.getElementById('waitlist').hidden"), off)
+        b.js("SC.select({type: 'node', id: %s})" % J(ids['marta']))
+        b.sleep(0.3)
+        check('status off: the panel and the card have no status buttons', b.js("!document.querySelector('#panel .sec.status') && document.getElementById('cardbar').hidden"))
+        b.key('Escape')
+        b.key('?')
+        b.wait("!!document.querySelector('#modal [data-a=advanced]')", 3)
+        click_el(b, '#modal [data-a=advanced]')
+        b.wait("!!document.getElementById('advFolders')", 3)
+        b.screenshot(os.path.join(shots, '38-advanced-settings.png'))
+        b.js("document.getElementById('advFolders').value = '/no/such/reports'")
+        click_el(b, '#modal [data-a=save]')
+        b.wait("document.getElementById('advMsg').textContent.length > 0", 3)
+        check('Advanced: a report folder that does not exist is refused in plain words', 'not found' in b.js("document.getElementById('advMsg').textContent"))
+        b.js("document.getElementById('advFolders').value = %s; document.getElementById('advName').value = 'Sam'; document.getElementById('advMin').value = '45'"
+             % J(os.path.join(work, 'reports')))
+        click_el(b, '#modal [data-a=save]')
+        b.wait('SC.data.statusOn === true', 8)
+        saved = wait_saved(b, env).get('settings') or {}
+        check('Advanced: saving a report folder turns the Status board on at once (no restart)',
+              b.js('SC.data.statusOn') and not b.js("document.getElementById('btnWait').hidden") and saved.get('reportFolders') == [os.path.join(work, 'reports')]
+              and saved.get('userName') == 'Sam' and saved.get('remindMin') == 45 and saved.get('notifyCommand') == '', saved)
+        # the update note: the test server never looks for updates, so the page is told there is one
+        none = b.js("!document.getElementById('btnUpdate')")
+        b.js("SC.update.info = {available: true, canUpdate: true, latest: '9.9.9', enabled: true, current: SC.version}; SC.afterStateChange(false)")
+        b.wait("!!document.getElementById('btnUpdate')", 3)
+        note = b.js("document.getElementById('btnUpdate').textContent")
+        b.screenshot(os.path.join(shots, '39-update-note.png'))
+        click_el(b, '#btnUpdate')
+        b.wait("!document.getElementById('modal').hidden", 3)
+        asked = b.js("document.getElementById('modal').textContent")
+        b.js("Array.from(document.querySelectorAll('#modal button')).find(x => x.textContent === 'Update').click()")
+        b.wait("/would run|source folder/.test(document.getElementById('toasts').textContent)", 5)
+        toast = b.js("document.getElementById('toasts').textContent")
+        check('an update shows as a small note in the footer; in test mode the button only says what it would run',
+              none and note == 'Update to v9.9.9' and 'Update to version 9.9.9?' in asked and ('would run' in toast or 'source folder' in toast)
+              and env.get('/api/update')['updating'] is False, [note, toast])
+        b.js("SC.update.info = null; SC.afterStateChange(false)")
+        b.events = []
+        ok = b.goto(env.base + '/?debug=1&still=1')
+        b.js('SC.refreshLive()', wait=True)
+        settle(b, 0.4)
+        want = {'question': 2, 'your-turn': 4, 'running': 2, 'not-done': 2, 'done': 13, 'replaced': 3}
+
+        def states():
+            return b.js("(()=>{const o={}; for (const s of SC.data.sessions){const k=SC.stateOf(s).key||'none'; o[k]=(o[k]||0)+1;} return o;})()")
+
+        def key_of(slug):
+            return b.js('SC.stateOf(SC.data.byId.get(%s)).key' % J(ids[slug]))
+        check('status: every card knows where it stands', ok and states() == want, states())
+        check('status: `status: question` and a "Sam picks" report both need an answer', key_of('pricing-question') == 'question' and key_of('robin-1-1') == 'question')
+        check('status: a `sent:` line turns a waiting card done', key_of('mika') == 'done')
+        check('status: `replaces:` and `replaced-by:` grey out the older cards',
+              all(key_of(x) == 'replaced' for x in ('daily-follow-ups', 'away-handover', 'overrides-go-live')) and
+              b.js('SC.stateOf(SC.data.byId.get(%s)).by.id' % J(ids['away-handover'])) == ids['robin-alignment'])
+        check('status: a not-done helper that is open counts as running, a closed one as stopped',
+              key_of('qa-run') == 'running' and key_of('hq') == 'running' and key_of('jira-sync') == 'not-done')
+        counts = b.js("({q: document.getElementById('waitQ').textContent, y: document.getElementById('waitY').textContent})")
+        check('status: the top bar counts what waits on you', counts == {'q': '2', 'y': '4'}, counts)
+        api = env.get('/api/waiting')
+        check('status: /api/waiting (for HQ) lists the same cards, oldest first',
+              [w['id'] for w in api['waiting']] == [ids[x] for x in ('tickets', 'robin-1-1', 'marta', 'release-note', 'pricing-question', 'academy-gif')],
+              [w['name'] for w in api['waiting']])
+        b.screenshot(os.path.join(shots, '40-tree-with-states.png'))
+
+        # ---- the Status layout ----
+        b.key('4')
+        settle(b, 0.7)
+        s = summary(b)
+        zones = b.js('SC.lay.zones.map(z => [z.key, z.count])')
+        check('status: key 4 opens the Status layout with one zone per state', s['layout'] == 'status' and zones == [[k, want[k]] for k in ('question', 'your-turn', 'running', 'not-done', 'done', 'replaced')], zones)
+        check('status: the whole board fits the window', s['drawn'] == s['shown'] == sum(want.values()), '%d drawn of %d, zoom %.2f' % (s['drawn'], s['shown'], s['zoom']))
+        inside = b.js("SC.lay.shown.every(n => { const z = SC.lay.zones.find(z => z.key === n.st.key); return n.x >= z.x0 && n.x + n.w <= z.x1 && n.y >= z.y0 && n.y + n.h <= z.y1; })")
+        check('status: every card sits inside the zone of its state', inside)
+        first = b.js("(()=>{const z=SC.lay.zones[1]; return SC.lay.shown.filter(n=>n.st.key==='your-turn').sort((a,b)=>a.y-b.y||a.x-b.x).map(n=>n.id);})()")
+        check('status: in a waiting zone the card that waited longest is on top', first == [ids[x] for x in ('tickets', 'marta', 'release-note', 'academy-gif')])
+        overlap = b.js("(()=>{const a=SC.lay.shown; for(let i=0;i<a.length;i++) for(let j=i+1;j<a.length;j++){const p=a[i],q=a[j]; if(p.x<q.x+q.w&&q.x<p.x+p.w&&p.y<q.y+q.h&&q.y<p.y+p.h) return true;} return false;})()")
+        check('status: no two cards overlap', overlap is False)
+
+        def snap(name, scale=2):
+            settle(b, 0.5)
+            b.set_scale(scale)
+            b.sleep(0.2)
+            b.js('SC.resize(); SC.drawNow()')
+            b.sleep(0.15)
+            b.screenshot(os.path.join(shots, name + '.png'))
+            b.set_scale(1)
+            b.sleep(0.1)
+            b.js('SC.resize(); SC.drawNow()')
+        snap('41-status-board-dark')
+        b.js("SC.setCam(-30, -70, 1.0, false); SC.drawNow()")
+        snap('42-status-zoomed-in-dark')
+        b.js("SC.fitAll(false); SC.zoomAt(SC.vw/2, SC.vh/2, 0.42); SC.drawNow()")
+        snap('43-status-far-away-dark')
+        b.js("document.getElementById('btnTheme').click(); SC.fitAll(false); SC.drawNow()")
+        snap('44-status-board-light')
+        b.js("SC.setCam(-30, -70, 1.0, false); SC.drawNow()")
+        snap('45-status-zoomed-in-light')
+        b.js("document.getElementById('btnTheme').click(); SC.fitAll(false); SC.drawNow()")
+
+        # ---- the "Your turn" list ----
+        b.key('w')
+        b.wait("!document.getElementById('waitlist').hidden", 3)
+        names = b.js("Array.from(document.querySelectorAll('#waitlist .wrow .nm')).map(e => e.textContent)")
+        check('status: W opens the "Your turn" list, oldest first', names == ['Tickets from yesterday', 'Robin 1:1 11:30', 'Marta reply', 'Dark mode release note', 'Northwind headcount columns', 'Help-page GIF script'], names)
+        click_el(b, '#waitlist .wrow[data-id="%s"] .nm' % ids['marta'])
+        b.wait("document.querySelector('#panel .sec.status') !== null", 4)
+        s = summary(b)
+        r = rect(b, ids['marta'])
+        check('status: a click in the list jumps to the card and opens it', s['sel'] == {'type': 'node', 'id': ids['marta']} and r['on'] and 200 < r['x'] < 1300, r)
+        settle(b, 0.5)
+        bar = b.js("(()=>{const e=document.getElementById('cardbar'); return e.hidden ? null : Array.from(e.querySelectorAll('button')).map(x=>x.textContent);})()")
+        check('status: a waiting card gets Sent / Mark done / Replaced by on the card', bar == ['Sent', 'Mark done', 'Replaced by…'], bar)
+        panel_btns = b.js("Array.from(document.querySelectorAll('#panel .sec.status button')).map(x=>x.textContent)")
+        check('status: the side panel has the same buttons', panel_btns == ['Sent', 'Mark done', 'Replaced by…'], panel_btns)
+        snap('46-your-turn-list-and-card-buttons', 2)
+
+        # ---- Sent ----
+        click_el(b, '#cardbar [data-a="sent"]')
+        settle(b, 0.6)
+        st = wait_saved(b, env)
+        mark = st['marks'].get(ids['marta']) or {}
+        check('status: Sent turns the card done and is saved', key_of('marta') == 'done' and mark.get('kind') == 'sent' and mark.get('sig'), mark)
+        check('status: the card left the list and the counts', b.js("document.getElementById('waitY').textContent") == '3' and
+              ids['marta'] not in [w['id'] for w in env.get('/api/waiting?rescan=0')['waiting']])
+        check('status: the card moved to the Done zone', b.js("SC.nodes.get(%s).zone" % J(ids['marta'])) == 'done')
+        bar = b.js("Array.from(document.querySelectorAll('#cardbar button')).map(x=>x.textContent)")
+        check('status: a marked card offers Reopen', bar == ['Reopen'], bar)
+        b.key('z', mods=4)
+        settle(b, 0.5)
+        check('status: Cmd+Z undoes the mark', key_of('marta') == 'your-turn' and ids['marta'] not in wait_saved(b, env)['marks'])
+        b.key('z', mods=4 | 8)
+        settle(b, 0.5)
+        check('status: redo puts it back', key_of('marta') == 'done')
+
+        # ---- Mark done from the list, Reopen from the panel ----
+        b.js("document.querySelector('#waitlist .wrow[data-id=\"%s\"] .wdone').click()" % ids['release-note'])
+        settle(b, 0.4)
+        check('status: the tick in the list marks a card done', key_of('release-note') == 'done' and b.js("document.getElementById('waitY').textContent") == '2')
+        b.js('SC.jumpToNode(%s)' % J(ids['release-note']))
+        b.wait("document.querySelector('#panel [data-act=\"st-reopen\"]') !== null", 4)
+        settle(b, 0.5)
+        click_el(b, '#panel [data-act="st-reopen"]')
+        settle(b, 0.4)
+        check('status: Reopen takes the mark off', key_of('release-note') == 'your-turn' and ids['release-note'] not in wait_saved(b, env)['marks'])
+
+        # ---- Replaced by… ----
+        b.js('SC.jumpToNode(%s)' % J(ids['tickets']))
+        b.wait("!document.getElementById('cardbar').hidden", 3)
+        settle(b, 0.6)                                 # the board glides to the card: wait until the bar stands still
+        click_el(b, '#cardbar [data-a="replaced"]')
+        b.wait("document.getElementById('repFind') !== null", 3)
+        b.type('robin al')
+        b.wait("document.querySelectorAll('#repPick button').length === 1", 3)
+        b.screenshot(os.path.join(shots, '47-replaced-by-picker.png'))
+        click_el(b, '#repPick button')
+        settle(b, 0.6)
+        st = wait_saved(b, env)
+        check('status: Replaced by… greys the card out and points to the newer session',
+              key_of('tickets') == 'replaced' and st['marks'][ids['tickets']]['by'] == ids['robin-alignment'] and
+              b.js("SC.nodes.get(%s).zone" % J(ids['tickets'])) == 'replaced', st['marks'].get(ids['tickets']))
+        txt = b.js("document.querySelector('#panel .sec.status').innerText")
+        check('status: the panel says what replaced it', 'Replaced by' in txt and 'Robin alignment' in txt, txt[:120])
+        click_el(b, '#cardbar [data-a="gonew"]')
+        settle(b, 0.5)
+        check('status: the arrow on a replaced card goes to the newer session', summary(b)['sel'] == {'type': 'node', 'id': ids['robin-alignment']})
+        b.key('Escape')
+        b.js("SC.fitAll(false); SC.drawNow()")
+        snap('48-status-after-marks', 2)
+
+        # ---- marks survive a reload and a rescan; a new report header ends them ----
+        b.goto(env.base + '/?debug=1&still=1')
+        b.js('SC.refreshLive()', wait=True)
+        check('status: marks and the open list survive a reload', key_of('marta') == 'done' and key_of('tickets') == 'replaced' and
+              summary(b)['layout'] == 'status' and b.js("!document.getElementById('waitlist').hidden"))
+        b.js('SC.refresh(true)', wait=True)
+        check('status: marks survive a rescan', key_of('marta') == 'done' and key_of('tickets') == 'replaced')
+        with open(os.path.join(rdir, 'marta.md'), 'w', encoding='utf-8') as fh:
+            fh.write('status: question\nname: W17·Marta reply\noutcome: Marta answered with a new question\nleft: prospect name or generic?\n')
+        b.js('SC.refresh(true)', wait=True)
+        b.wait('SC.stateOf(SC.data.byId.get(%s)).key === "question"' % J(ids['marta']), 6)
+        check('status: when the helper reports something new, the old mark no longer hides the card', key_of('marta') == 'question')
+        with open(os.path.join(rdir, 'jira-sync.md'), 'a', encoding='utf-8') as fh:
+            fh.write('\nreplaced-by: W17·Robin alignment\n')
+        b.js('SC.refresh(true)', wait=True)
+        b.wait('SC.stateOf(SC.data.byId.get(%s)).key === "replaced"' % J(ids['jira-sync']), 6)
+        check('status: HQ can close a card by adding one line to its report', key_of('jira-sync') == 'replaced')
+
+        # ---- other layouts keep working with states on the cards ----
+        b.js("SC.jumpToNode(%s)" % J(ids['dimension-spike']))
+        settle(b, 0.3)
+        b.js("SC.setLayout('status'); SC.search && 0")
+        b.key('2')
+        settle(b, 0.6)
+        b.key('f')
+        snap('49-timeline-with-states', 2)
+        b.key('1')
+        settle(b, 0.5)
+        b.js("SC.homeView(false); SC.drawNow()")
+        check('status: Tree and Timeline still show every session', summary(b)['shown'] == sum(want.values()))
+        b.key('w')
+        settle(b, 1.0)                                 # the view is saved a moment after the board stops moving
+        wait_saved(b, env)                             # nothing left to write when this server stops
+        probs = b.problems()
+        check('status: no JavaScript errors or failed requests', not probs, probs[:5])
+        clog = [e for e in env.get('/api/clientlog')['entries'] if e.get('level') == 'error']
+        check('status: the page reported no errors to the server', not clog, clog[:3])
+    finally:
+        env.stop()
+
+
 def main():
     import faulthandler
     import signal
@@ -1000,6 +1280,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--shots', default=os.path.join(HERE, 'screenshots'))
     ap.add_argument('--keep', action='store_true', help='keep the temp folder (server log, state)')
+    ap.add_argument('--only', default='', help='"status" = only the v1.2 status checks (quick)')
     args = ap.parse_args()
     os.makedirs(args.shots, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix='canvas-check-')
@@ -1015,11 +1296,15 @@ def main():
         os.makedirs(main_dir)
         env = Env(main_dir, projects=projects, root=demo['folders'][0])
         b = cdp.Browser(tmp, port=free_port(9377))
-        best_shots(env, b, args.shots)
-        extra = run(env, b, args.shots)
-        run_wizard(tmp, b, args.shots, projects, demo)
-        run_small(tmp, b, args.shots)
-        extra['stress'] = run_stress(tmp, b, args.shots)
+        if args.only == 'status':
+            run_status(tmp, b, args.shots)
+        else:
+            best_shots(env, b, args.shots)
+            extra = run(env, b, args.shots)
+            run_wizard(tmp, b, args.shots, projects, demo)
+            run_small(tmp, b, args.shots)
+            run_status(tmp, b, args.shots)
+            extra['stress'] = run_stress(tmp, b, args.shots)
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.0 (2026-11-17)
+
+Updates, and everything built since 1.0.1 in one place.
+
+- **Updates**: `session-canvas update` gets the newest version from GitHub and keeps your board, notes and
+  settings. The board looks for a new version once a day and shows a small "Update to v…" note at the bottom;
+  one click updates and asks you to reload. Versions are published on the GitHub Releases page.
+- **Go to window**: Resume on a session that is already open brings its window to the front (Ghostty and
+  Terminal; iTerm comes to the front without picking the tab).
+- **Clearer cards**: each card shows the end of its last message; double-click a card's name to rename it; the
+  version is shown at the bottom of the board.
+- **Status reports (optional, off by default)**: if your sessions write small report files, cards show where
+  they stand (needs your answer, your turn, running, stopped, done, replaced). New **Status** layout (key 4),
+  **Your turn** list (key W), and Sent / Mark done / Replaced by buttons. `GET /api/waiting` lists what waits
+  on you for scripts.
+  A report that two sessions share is listed once (under the newer session). A `sent:` line always closes
+  the card, so a report with something still left for you must not carry one.
+- **Reminder (optional, off by default)**: runs a script of yours when a card has waited on you for 30 minutes.
+- Both are set under **?** → Settings → Advanced settings. Without them the board looks and works as before.
+- `make-release.sh --publish` tags the version and creates the GitHub release with the zip.
+
 ## 1.0.1 (2026-11-14)
 
 Fixes from an independent review.

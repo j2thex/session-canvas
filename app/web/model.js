@@ -6,10 +6,12 @@
   const meta = name => { const m = document.querySelector('meta[name="' + name + '"]'); return m ? m.getAttribute('content') : ''; };
   SC.token = meta('canvas-token');
   SC.dryRun = meta('canvas-dry-run') === '1';
+  SC.version = meta('canvas-version') || '';
   SC.params = new URLSearchParams(location.search);
   SC.noSave = SC.params.has('nosave');
   SC.hooks = { layout: () => {}, data: () => {}, search: () => {}, saved: () => {}, undo: () => {} };
 
+  SC.LAYOUTS = ['tree', 'timeline', 'free', 'status'];
   SC.KIND_LABEL = { you: 'You', helper: 'Helpers', auto: 'Automatic', desktop: 'Desktop app' };
   SC.KIND_ONE = { you: 'you', helper: 'helper', auto: 'automatic', desktop: 'desktop app' };
   const KIND_RANK = { you: 0, helper: 1, auto: 2, desktop: 3 };
@@ -57,15 +59,15 @@
   const defaultFilters = () => ({ kinds: { you: true, helper: true, auto: true, desktop: true }, projects: [], from: null, to: null, commands: [], showHidden: false });
   const defaultView = () => ({ layout: 'tree', colorBy: 'week', theme: '', showEdges: true, cams: {}, filters: defaultFilters() });
   SC.defaultFilters = defaultFilters;
-  SC.state = { rev: 0, view: defaultView(), positions: {}, order: {}, edges: [], removedEdges: [], notes: [], titles: {}, labels: {}, colors: {}, hidden: [], collapsed: [], settings: {} };
+  SC.state = { rev: 0, view: defaultView(), positions: {}, order: {}, edges: [], removedEdges: [], notes: [], titles: {}, labels: {}, colors: {}, hidden: [], collapsed: [], settings: {}, marks: {} };
 
   SC.loadState = function (s) {
     const st = SC.state;
-    for (const k of ['positions', 'order', 'titles', 'labels', 'colors', 'settings']) if (s[k] && typeof s[k] === 'object' && !Array.isArray(s[k])) st[k] = s[k];
+    for (const k of ['positions', 'order', 'titles', 'labels', 'colors', 'settings', 'marks']) if (s[k] && typeof s[k] === 'object' && !Array.isArray(s[k])) st[k] = s[k];
     for (const k of ['edges', 'removedEdges', 'notes', 'hidden', 'collapsed']) if (Array.isArray(s[k])) st[k] = s[k];
     st.rev = s.rev || 0;
     const v = defaultView(), sv = (s.view && typeof s.view === 'object') ? s.view : {};
-    if (['tree', 'timeline', 'free'].includes(sv.layout)) v.layout = sv.layout;
+    if (SC.LAYOUTS.includes(sv.layout)) v.layout = sv.layout;
     if (['week', 'project', 'kind'].includes(sv.colorBy)) v.colorBy = sv.colorBy;
     if (sv.theme === 'dark' || sv.theme === 'light') v.theme = sv.theme;
     if (typeof sv.showEdges === 'boolean') v.showEdges = sv.showEdges;
@@ -126,7 +128,7 @@
   });
 
   // ---- undo / redo: snapshots of what the person can change ----
-  const UNDO_KEYS = ['positions', 'order', 'edges', 'removedEdges', 'notes', 'titles', 'labels', 'colors', 'hidden', 'collapsed'];
+  const UNDO_KEYS = ['positions', 'order', 'edges', 'removedEdges', 'notes', 'titles', 'labels', 'colors', 'hidden', 'collapsed', 'marks'];
   const undoStack = [], redoStack = [];
   const snap = () => { const o = {}; for (const k of UNDO_KEYS) o[k] = SC.state[k]; return JSON.stringify(o); };
   SC.checkpoint = function (label) {
@@ -158,7 +160,86 @@
   let edgeCache = null;
   SC.invalidate = function () { edgeCache = null; };
 
-  SC.titleOf = s => SC.state.titles[s.id] || s.title || '(untitled)';
+  /* The name on a card: yours if you renamed it, else the helper's intended name (no "W16·" tag), else Claude's title. */
+  SC.baseName = s => s.name || s.title || '(untitled)';
+  SC.titleOf = s => SC.state.titles[s.id] || SC.baseName(s);
+  /* Where a card stands. Order = how much it needs you. `zone` is the name of its group in the Status layout. */
+  SC.STATES = {
+    'question': { label: 'ANSWER NEEDED', zone: 'Needs your answer', hint: 'you must answer or decide', color: '#b98cff', ink: '#1b1030', wait: true },
+    'your-turn': { label: 'YOUR TURN', zone: 'Your turn', hint: 'ready for you: send, review or approve', color: '#f5a524', ink: '#231503', wait: true },
+    'running': { label: 'RUNNING', zone: 'Running', hint: 'Claude is working on it now', color: '#38b6ff', ink: '#04202f' },
+    'not-done': { label: 'NOT DONE', zone: 'Stopped, not done', hint: 'ended early', color: '#ef5b5b', ink: '#2a0707' },
+    'done': { label: 'DONE', zone: 'Done', hint: 'nothing left for you', color: '#2fc98a', ink: '#04231a' },
+    'replaced': { label: 'REPLACED', zone: 'Replaced', hint: 'a newer session took over', color: '#8792a6', ink: '#12161d' },
+  };
+  SC.STATE_ORDER = ['question', 'your-turn', 'running', 'not-done', 'done', 'replaced'];
+  SC.STATUS = SC.STATES;        // the name used before v1.2
+  const NO_STATE = { key: '', info: null, since: 0, by: null, mark: null, note: '' };
+  /* The same rule as card_state() in indexer.py: a mark you made on the board wins while the report's header is
+     the one it was made on; then `replaced-by` / `replaces`; then the report; else "running" while it is open. */
+  SC.stateOf = function (s) {
+    if (!SC.data.statusOn) return s.active ? Object.assign({}, NO_STATE, { key: 'running', info: SC.STATES.running, since: s.start }) : NO_STATE;
+    const r = s.report || null, m = SC.state.marks[s.id];
+    const mk = (key, extra) => Object.assign({ key: key, info: SC.STATES[key], since: (r && r.at) || s.end || s.start, by: null, mark: null, note: '' }, extra);
+    if (m && (m.kind === 'done' || m.kind === 'sent' || m.kind === 'replaced') && (!m.sig || !r || m.sig === r.sig)) {
+      if (m.kind === 'replaced') {
+        const o = m.by ? SC.data.byId.get(m.by) : null;
+        return mk('replaced', { mark: m, since: m.at || 0, by: o ? { id: o.id, name: SC.titleOf(o) } : null, note: 'you said so' });
+      }
+      return mk('done', { mark: m, since: m.at || 0, note: m.kind === 'sent' ? 'sent (you said so)' : 'marked done by you' });
+    }
+    if (s.replacedBy) {
+      const o = s.replacedBy.id ? SC.data.byId.get(s.replacedBy.id) : null;
+      return mk('replaced', { by: { id: o ? o.id : null, name: o ? SC.titleOf(o) : s.replacedBy.name }, note: 'its report says so' });
+    }
+    if (r) {
+      if (r.status === 'your-turn' || r.status === 'question') {
+        if (r.sent) return mk('done', { note: 'sent', sent: r.sent });
+        return mk(r.status === 'question' || r.ask ? 'question' : 'your-turn');
+      }
+      if (r.status === 'not-done') return mk(s.active ? 'running' : 'not-done');
+      return mk('done');
+    }
+    return s.active ? mk('running', { since: s.start }) : NO_STATE;
+  };
+  SC.stateKey = s => SC.stateOf(s).key;
+  /* Mark a card by hand: 'done' | 'sent' | 'replaced' (by = the newer session's id). null = take the mark off. */
+  SC.setMark = function (id, kind, by) {
+    const s = SC.data.byId.get(id);
+    if (!s) return false;
+    SC.checkpoint(kind ? 'mark ' + (kind === 'replaced' ? 'replaced' : kind) : 'reopen');
+    const marks = Object.assign({}, SC.state.marks);
+    if (!kind) delete marks[id];
+    else marks[id] = { kind: kind, by: kind === 'replaced' ? (by || null) : null, at: Date.now(), sig: (s.report && s.report.sig) || '' };
+    SC.state.marks = marks;
+    SC.touch('marks');
+    return true;
+  };
+  /* Everything that waits on you, the one that has waited longest first. */
+  SC.waiting = function () {
+    const out = [], seen = new Set();
+    for (const s of SC.data.sessions.slice().sort((a, b) => b.start - a.start || (a.id < b.id ? 1 : -1))) {
+      const st = SC.stateOf(s);
+      if (!(st.info && st.info.wait)) continue;
+      const f = s.report && s.report.file;           // two sessions with the same report are one thing to do: the newer one
+      if (f) { if (seen.has(f)) continue; seen.add(f); }
+      out.push({ s: s, st: st });
+    }
+    out.sort((a, b) => a.st.since - b.st.since || (a.s.id < b.s.id ? -1 : 1));
+    return out;
+  };
+  /* The latest from a session: where it stands, what is done, what is left; else the end of its last message. */
+  SC.latestOf = function (s) {
+    const r = s.report, st = SC.stateOf(s);
+    if (st.key === 'replaced') return { status: 'replaced', text: 'Replaced by ' + (st.by ? st.by.name : 'a newer session') + (r && r.outcome ? ' · ' + r.outcome : '') };
+    if (!r) return { status: st.key, text: (st.mark ? 'Marked done by you' + (s.last ? ' · ' : '') : '') + (s.last || '') };
+    if (st.mark || st.sent) return { status: 'done', text: (st.mark && st.mark.kind === 'done' ? 'Marked done by you' : 'Sent') + (r.outcome ? ' · ' + r.outcome : '') };
+    const nothing = !r.left || /^(nothing|none|no|nobody|n\/a|-)\b/i.test(r.left);
+    const text = st.info && st.info.wait
+      ? [r.left, r.outcome].filter(Boolean).join(' · Done so far: ')
+      : [r.outcome, nothing ? '' : 'Left: ' + r.left].filter(Boolean).join(' · ');
+    return { status: st.key, text: text || s.last || '' };
+  };
 
   SC.applyData = function (p) {
     const d = SC.data;
@@ -170,6 +251,8 @@
     d.generation = p.generation || 0;
     d.home = p.home || '';
     d.defaultCwd = p.defaultCwd || '';
+    d.statusOn = !!p.statusOn;          // status reports are optional: off until a report folder is set (Advanced)
+    if (!d.statusOn && SC.state.view.layout === 'status') SC.state.view.layout = 'tree';
     d.indexedAt = p.indexedAt || Date.now();
     d.errors = p.errors || [];
     d.byId = new Map();
@@ -289,12 +372,16 @@
       n.vis = false;
     }
     const nodes = vis.map(s => SC.nodes.get(s.id));
+    for (const n of nodes) n.st = SC.stateOf(n.s);          // where each card stands, worked out once per layout pass
     const hiddenIds = st.hidden.length ? new Set(st.hidden) : null;
     for (const n of nodes) n.hiddenShown = !!(hiddenIds && hiddenIds.has(n.id));      // shown faded via Filters
     const edges = SC.edges();
     let lay;
     if (layout === 'timeline') {
       lay = L.timeline(nodes, { order: st.order, laneOf: SC.laneOf });
+      lay.fam = L.family(nodes, edges);
+    } else if (layout === 'status') {
+      lay = L.status(nodes, { order: SC.STATE_ORDER, states: SC.STATES });
       lay.fam = L.family(nodes, edges);
     } else if (layout === 'free') {
       if (!Object.keys(st.positions).length && nodes.length) SC.seedFree(nodes, edges);
@@ -456,7 +543,10 @@
     } catch (e) { SC.liveKnown = false; return SC.live; }
     let changed = false;
     for (const s of SC.data.sessions) { const a = SC.isOpen(s); if (a !== s.active) { s.active = a; changed = true; } }
-    if (changed && SC.invalidate) { SC.invalidate(); if (SC.renderPanel) SC.renderPanel(true); }
+    if (changed && SC.invalidate) {          // a session started or stopped: its card may change group
+      if (SC.afterStateChange && !SC.ui.drag && !SC.ui.editing) { SC.reprep(); SC.afterStateChange(true); }
+      else { SC.invalidate(); if (SC.renderPanel) SC.renderPanel(true); }
+    }
     return SC.live;
   };
 })(window.SC);

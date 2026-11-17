@@ -14,6 +14,7 @@
     SC.renderPanel();
     SC.syncNoteSelection();
     SC.renderEdgeBar();
+    SC.renderCardBar();
     if (sel && sel.type === 'node' && !(opts && opts.noReveal)) {
       const n = SC.nodes.get(sel.id);
       if (n && n.vis) SC.reveal(n);
@@ -75,6 +76,8 @@
   SC.jumpToNode = function (id, opts) {
     const n = SC.nodes.get(id);
     if (!n) return;
+    // the Status layout only holds cards with a status from the last days: anything else is shown in the Tree
+    if (!n.vis && view().layout === 'status' && SC.lay.nodes.indexOf(n) >= 0) SC.setLayout('tree');
     if (!n.vis) {
       const fam = SC.lay.fam;
       if (SC.lay.nodes.indexOf(n) >= 0 && view().layout === 'tree') {
@@ -134,6 +137,8 @@
     SC.renderPanel(true);
     SC.syncNoteSelection();
     SC.renderEdgeBar();
+    SC.renderCardBar();
+    SC.renderWaiting();
     renderSearchUi();
     renderStatus();
     renderLegend();
@@ -213,12 +218,14 @@
   // ---- layouts ----
   SC.setLayout = function (name, force) {
     const v = view();
-    if (!['tree', 'timeline', 'free'].includes(name) || (v.layout === name && !force)) return;
+    if (!SC.LAYOUTS.includes(name) || (v.layout === name && !force)) return;
+    if (name === 'status' && !SC.data.statusOn) { SC.toast('The Status board needs report files. Turn it on under ? → Settings → Advanced.'); return; }
     v.cams[v.layout] = { x: cam.x, y: cam.y, z: cam.z };
     const changed = v.layout !== name;
     v.layout = name;
     SC.touch('view');
     if (ui.sel && ui.sel.type === 'edge') ui.sel = null;
+    SC.reprep();                               // card colours follow the layout (Status: colour = state)
     SC.afterStateChange(true);
     syncToolbar();
     const selNode = ui.sel && ui.sel.type === 'node' ? SC.nodes.get(ui.sel.id) : null;
@@ -227,7 +234,8 @@
   };
   function restoreCam(animate) {
     const c = view().cams[view().layout];
-    if (c && isFinite(c.x) && isFinite(c.y) && c.z > 0) SC.setCam(c.x, c.y, c.z, animate); else SC.homeView(animate);
+    if (view().layout === 'status') SC.homeView(animate);          // always opens on the whole board
+    else if (c && isFinite(c.x) && isFinite(c.y) && c.z > 0) SC.setCam(c.x, c.y, c.z, animate); else SC.homeView(animate);
   }
   function syncToolbar() {
     const v = view();
@@ -419,7 +427,11 @@
 
   canvas.addEventListener('dblclick', e => {
     const w = SC.toWorld(e.clientX, e.clientY), h = SC.hit(w.x, w.y);
-    if (h && h.type === 'node') { if (ui.focus === h.n.id) SC.clearFocus(); else SC.focusNode(h.n.id); }
+    if (h && h.type === 'node') {
+      // double-click the name of a card = rename it; anywhere else on the card = focus on its family
+      if (SC.cam.z >= 0.55 && w.y - h.n.y < 44 && ui.sel && ui.sel.id === h.n.id && ui.panelOpen) SC.startRename();
+      else if (ui.focus === h.n.id) SC.clearFocus(); else SC.focusNode(h.n.id);
+    }
     else if (!h) newNoteAt(w.x - 20, w.y - 20);
   });
 
@@ -659,12 +671,14 @@
     if (v.colorBy === 'kind') items = ['you', 'helper', 'auto', 'desktop'].filter(k => d.sessions.some(s => s.kind === k)).map(k => [SC.KIND_COLOR[k], SC.KIND_LABEL[k]]);
     else if (v.colorBy === 'project') items = d.projects.map((p, i) => [SC.PALETTE[i % SC.PALETTE.length], p.label]);
     else items = d.weeks.slice(-8).map(w => [SC.PALETTE[(d.weeks.indexOf(w) * 5) % SC.PALETTE.length], U.fmtDate(w)]);
-    if (items.length) rows.push('<div class="lrow"><span>' + (v.colorBy === 'week' ? 'Week of' : 'Colour') + '</span>' + items.map(it => '<span><i style="background:' + it[0] + '"></i>' + E(it[1]) + '</span>').join('') + '</div>');
+    if (items.length && v.layout !== 'status') rows.push('<div class="lrow"><span>' + (v.colorBy === 'week' ? 'Week of' : 'Colour') + '</span>' + items.map(it => '<span><i style="background:' + it[0] + '"></i>' + E(it[1]) + '</span>').join('') + '</div>');
     const kinds = Array.from(new Set((SC.lay.edges || []).map(e => e.kind)));
     if (kinds.length && v.showEdges !== false) {
       rows.push('<div class="lrow"><span>Links</span>' + ['continued', 'fork', 'handover', 'helper', 'worktree', 'manual'].filter(k => kinds.includes(k)).map(k => '<span><i class="ln" style="border-color:' + SC.EDGE_COLOR[k] + '"></i>' + SC.EDGE_LABEL[k] + '</span>').join('') +
         ((SC.lay.edges || []).some(e => e.guess) ? '<span><i class="ln dash" style="border-color:var(--muted)"></i>a guess</span>' : '') + '</div>');
     }
+    const present = new Set(SC.lay.shown.map(n => n.st && n.st.key).filter(Boolean));
+    if (present.size && v.layout !== 'status') rows.push('<div class="lrow"><span>Status</span>' + SC.STATE_ORDER.filter(k => present.has(k)).map(k => '<span><i class="st st-' + k + '" style="--c:' + SC.STATES[k].color + '"></i>' + E(SC.STATES[k].zone) + '</span>').join('') + '</div>');
     $('legend').innerHTML = rows.join('');
   }
   function renderStatus() {
@@ -678,6 +692,8 @@
       '<span>' + save + '</span><span>Looked for new sessions ' + E(U.ago(d.indexedAt)) + '</span>' +
       (serverDown ? '<span class="bad">The Canvas server is not answering</span>' : '') +
       '<span class="sp"></span>' +
+      '<span title="Session Canvas version">v' + E(SC.version) + '</span>' +
+      (SC.update.info && SC.update.info.available && SC.update.info.canUpdate ? '<button class="linkbtn" id="btnUpdate" title="Get the new version from GitHub. Your board and settings are kept.">Update to v' + E(SC.update.info.latest) + '</button>' : '') +
       (SC.dryRun ? '<span class="bad">TEST MODE: buttons show the command instead of opening Terminal</span>' : '') +
       (SC.params.has('debug') ? '<span>draw ' + SC.perf.avg.toFixed(1) + ' ms (max ' + SC.perf.max.toFixed(1) + ')</span>' : '');
   }
@@ -713,6 +729,50 @@
     renderStatus();
   }
   SC.refresh = refresh;
+
+  // ---- updates: the server looks for a newer release at most once a day; the page only shows the note ----
+  SC.update = { info: null, busy: false };
+  SC.checkUpdate = async function (force) {
+    try { SC.update.info = await SC.api.get('/api/update' + (force ? '?force=1' : '')); } catch (e) { /* no note, that is all */ }
+    renderStatus();
+    return SC.update.info;
+  };
+  SC.runUpdate = async function () {
+    const info = SC.update.info || {};
+    if (SC.update.busy) return;
+    const go = await SC.ask('Update to version ' + E(info.latest || 'the newest') + '?',
+      '<p>The new version is downloaded from GitHub and the board starts again. Your board, notes and settings are kept.</p>',
+      [{ label: 'Not now', value: null }, { label: 'Update', value: 'go', cls: 'accent', focus: true }]);
+    if (!go) return;
+    let r;
+    try { r = await SC.api.post('/api/update', {}); } catch (e) { r = { ok: false, message: 'The Canvas server is not answering.' }; }
+    if (!r.ok || r.dryRun) { SC.toast(r.message || 'Could not start the update.', { error: !r.ok }); return; }
+    SC.update.busy = true;
+    SC.modal('<h3>Updating…</h3><p class="muted" id="updMsg">Downloading the new version. The board comes back by itself.</p>');
+    SC.ui.modalDone = null;
+    const t0 = Date.now(), old = SC.version;
+    const done = (title, text, reload) => {
+      SC.update.busy = false;
+      const dlg = SC.modal('<h3>' + E(title) + '</h3><p>' + E(text) + '</p><div class="btns">' +
+        (reload ? '<button class="btn accent" data-a="reload" data-autofocus>Reload the board</button>' : '<button class="btn accent" data-a="close" data-autofocus>OK</button>') + '</div>');
+      dlg.addEventListener('click', e => { if (e.target.dataset.a === 'reload') location.reload(); if (e.target.dataset.a === 'close') SC.closeModal(); });
+    };
+    const poll = async () => {
+      let h = null, u = null;
+      try { h = await SC.api.get('/api/health'); } catch (e) { h = null; }
+      if (h && h.version && h.version !== old) return done('Updated to version ' + h.version, 'Reload the page to use it.', true);
+      if (h) { try { u = await SC.api.get('/api/update'); } catch (e) { u = null; } }
+      if (u && !u.updating && u.failed) return done('The update did not work', u.failed + ' Nothing was changed. You can also run “session-canvas update” in a terminal.', false);
+      if (Date.now() - t0 > 180000) return done('The update is taking long', 'Run “session-canvas update” in a terminal to see what it says, then reload this page.', false);
+      setTimeout(poll, 1500);
+    };
+    setTimeout(poll, 2500);
+  };
+  $('status').addEventListener('click', e => { if (e.target.id === 'btnUpdate') SC.runUpdate(); });
+  if (!SC.dryRun) {
+    setTimeout(() => SC.checkUpdate().then(i => { if (i && i.checking) setTimeout(SC.checkUpdate, 20000); }), 4000);
+    setInterval(() => { if (document.visibilityState === 'visible') SC.checkUpdate(); }, 6 * 3600 * 1000);
+  }
   setInterval(() => { if (document.visibilityState === 'visible') refresh(false); }, 60000);
   setInterval(renderStatus, 15000);
   SC.refreshLive();
@@ -787,6 +847,8 @@
       case '1': SC.setLayout('tree'); break;
       case '2': SC.setLayout('timeline'); break;
       case '3': SC.setLayout('free'); break;
+      case '4': SC.setLayout('status'); break;
+      case 'w': case 'W': SC.toggleWaiting(); break;
       case 'n': case 'N': newNoteCentered(); break;
       case 's': case 'S': SC.openNewSessionDialog(); break;
       case 'r': case 'R': refresh(true); break;
@@ -829,7 +891,7 @@
     try { saved = await SC.api.get('/api/state'); } catch (e) { SC.toast('Could not read your saved board. Starting fresh.', { error: true }); }
     SC.loadState(saved);
     const P = SC.params, v = view();
-    if (['tree', 'timeline', 'free'].includes(P.get('layout'))) v.layout = P.get('layout');
+    if (SC.LAYOUTS.includes(P.get('layout'))) v.layout = P.get('layout');
     if (['week', 'project', 'kind'].includes(P.get('color'))) v.colorBy = P.get('color');
     const sysLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
     SC.setTheme(P.get('theme') || v.theme || (sysLight ? 'light' : 'dark'));
@@ -860,13 +922,16 @@
   SC.debug = {
     rect(id) { const n = SC.nodes.get(id); if (!n) return null; const a = SC.toScreen(n.x, n.y); return { x: a.x, y: a.y, w: n.w * cam.z, h: n.h * cam.z, vis: !!n.vis, on: !!n.on }; },
     summary() {
-      return { layout: view().layout, shown: SC.lay.shown.length, total: SC.data.sessions.length, edges: (SC.lay.edges || []).length, zoom: cam.z, cam: { x: cam.x, y: cam.y },
+      const states = {};
+      for (const n of SC.lay.shown) if (n.st && n.st.key) states[n.st.key] = (states[n.st.key] || 0) + 1;
+      return { states: states, waiting: SC.waiting().length, layout: view().layout, shown: SC.lay.shown.length, total: SC.data.sessions.length, edges: (SC.lay.edges || []).length, zoom: cam.z, cam: { x: cam.x, y: cam.y },
         sel: ui.sel, focus: ui.focus, matches: SC.search.order.length, notes: st().notes.length, hidden: st().hidden.length, saveState: SC.saveState,
         drawn: SC.drawList.length, perf: SC.perf, panelOpen: !!ui.panelOpen, linking: !!ui.linking };
     },
     /* Draw `frames` frames while panning and zooming; reports how long drawing takes. */
     async bench(frames, zoom) {
       frames = frames || 120;
+      SC.benching = true;
       const times = [], gaps = [];
       const c0 = { x: cam.x, y: cam.y, z: cam.z };
       const b = SC.lay.bounds, bw = b.x1 - b.x0, bh = b.y1 - b.y0;
@@ -888,6 +953,7 @@
         last = now;
       }
       SC.setCam(c0.x, c0.y, c0.z, false);
+      SC.benching = false;
       times.sort((a, b2) => a - b2);
       gaps.sort((a, b2) => a - b2);
       const avg = a => a.reduce((s, x) => s + x, 0) / a.length;

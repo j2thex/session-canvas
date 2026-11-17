@@ -5,11 +5,12 @@
 #   ./install.sh                 ask the few questions (autostart, PATH) and open the board
 #   ./install.sh --yes           accept the defaults without asking (autostart: no, PATH: yes)
 #   options: --autostart / --no-autostart   --no-open   --no-start   --dir <folder> (default ~/.session-canvas)
+#            --no-path (never touch ~/.zshrc; used by `session-canvas update`)
 set -u
 setopt null_glob
 SRC=${0:A:h}
 DEST=${SESSION_CANVAS_HOME:-$HOME/.session-canvas}
-YES=0; AUTO=ask; OPEN=1; START=1
+YES=0; AUTO=ask; OPEN=1; START=1; SETPATH=1
 while (( $# )); do
   case $1 in
     --yes|-y) YES=1 ;;
@@ -17,8 +18,9 @@ while (( $# )); do
     --no-autostart) AUTO=no ;;
     --no-open) OPEN=0 ;;
     --no-start) START=0; OPEN=0 ;;
+    --no-path) SETPATH=0 ;;
     --dir) shift; DEST=${1:?--dir needs a folder} ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) print -u2 "install.sh: don't know '$1' (try --help)"; exit 2 ;;
   esac
   shift
@@ -92,7 +94,7 @@ if (( UPGRADE )); then ok "Upgraded in $DEST (your board and settings are kept)"
 mkdir -p "$BIN"
 ln -sf "$DEST/bin/session-canvas" "$BIN/session-canvas"
 ok "Command: session-canvas  (in $BIN)"
-if [[ ":$PATH:" != *":$BIN:"* ]]; then
+if (( SETPATH )) && [[ ":$PATH:" != *":$BIN:"* ]]; then
   RC=$HOME/.zshrc
   if grep -qs 'session-canvas: PATH' "$RC"; then
     say "Open a new terminal window to use the session-canvas command."
@@ -145,4 +147,4 @@ fi
 print -r -- ""
 if (( START )); then print -r -- "Done. The board opens in your browser; a short setup wizard asks 3 questions the first time."
 else print -r -- "Done. Not started (--no-start). Run: session-canvas"; fi
-print -r -- "Later: session-canvas (open) · session-canvas stop · session-canvas uninstall"
+print -r -- "Later: session-canvas (open) · session-canvas stop · session-canvas update · session-canvas uninstall"

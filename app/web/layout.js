@@ -240,6 +240,54 @@
     return U.clamp(col * lane.maxRows + row, 0, Math.max(0, count - 1));
   };
 
+  /* STATUS: one zone per state, side by side, in the order "how much it needs you":
+     needs your answer | your turn | running | stopped, not done | done | replaced.
+     Waiting cards: the one that has waited longest on top. Done / replaced / stopped: newest first, last 7 days only
+     (older ones stay in the other layouts). Sessions with no status are not on this board. */
+  L.ST = { PAD: 26, HEAD: 104, GAP: 46, RECENT_DAYS: 7, MAX_ROWS: 7 };
+  L.status = function (nodes, opts) {
+    const Z = L.ST, now = opts.now || Date.now();
+    const cutoff = U.addDays(U.startOfDay(now), -(Z.RECENT_DAYS - 1));
+    const groups = new Map();
+    for (const k of opts.order) groups.set(k, []);
+    let older = 0;
+    for (const n of nodes) {
+      n.vis = false; n.depth = 0; n.unplaced = false;
+      const st = n.st, g = st && groups.get(st.key);
+      if (!g) continue;
+      const wait = st.info && st.info.wait;
+      if (!wait && st.key !== 'running' && (st.since || n.s.end) < cutoff) { older++; continue; }
+      g.push(n);
+    }
+    const zones = [];
+    let x = 0, maxH = 0;
+    for (const key of opts.order) {
+      const list = groups.get(key), info = opts.states[key];
+      const waitZone = !!info.wait || key === 'running';
+      list.sort((a, b) => waitZone ? (a.st.since - b.st.since || byStart(a, b)) : (b.st.since - a.st.since || byStart(b, a)));
+      const cols = Math.max(1, Math.ceil(list.length / Z.MAX_ROWS));
+      const w = cols * (CARD.W + CARD.GX) - CARD.GX + 2 * Z.PAD;
+      let colY = [];
+      for (let c = 0; c < cols; c++) colY.push(Z.HEAD);
+      for (let i = 0; i < list.length; i++) {
+        const n = list[i];
+        // fill row by row, so the most urgent cards make the top row
+        const c = i % cols;
+        n.vis = true;
+        n.x = x + Z.PAD + c * (CARD.W + CARD.GX);
+        n.y = colY[c];
+        n.zone = key;
+        colY[c] += n.h + CARD.GY;
+      }
+      const h = Math.max(Z.HEAD + CARD.H + CARD.GY, Math.max.apply(null, colY)) - CARD.GY + Z.PAD;
+      zones.push({ key: key, info: info, x0: x, x1: x + w, y0: 0, y1: h, count: list.length, cols: cols });
+      maxH = Math.max(maxH, h);
+      x += w + Z.GAP;
+    }
+    for (const z of zones) z.y1 = maxH;            // lanes of one height read as one board
+    return { type: 'status', zones: zones, width: x - Z.GAP, height: maxH, older: older, days: Z.RECENT_DAYS };
+  };
+
   /* FREE: wherever the person put each card. Cards with no saved place wait in a column on the left. */
   L.free = function (nodes, positions) {
     let minX = Infinity, minY = Infinity;

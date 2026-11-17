@@ -412,7 +412,7 @@ class IndexAndCache(TempCase):
         idx = self.index()
         idx.refresh()
         p = idx.payload()
-        self.assertEqual(sorted(p), sorted(['sessions', 'edges', 'projects', 'home', 'defaultCwd', 'generation', 'indexedAt', 'stats', 'errors']))
+        self.assertEqual(sorted(p), sorted(['sessions', 'edges', 'projects', 'home', 'defaultCwd', 'generation', 'indexedAt', 'stats', 'errors', 'statusOn']))
         s = p['sessions'][0]
         for k in ('id', 'title', 'project', 'projectLabel', 'cwd', 'kind', 'start', 'end', 'prompts', 'replies', 'msgs', 'keywords', 'about', 'commands', 'jira', 'linkCounts', 'mtime', 'size'):
             self.assertIn(k, s)

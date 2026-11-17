@@ -13,6 +13,7 @@ modified time stay the same. Delete the folder to rebuild from scratch.
 import calendar
 import collections
 import glob
+import hashlib
 import json
 import math
 import os
@@ -51,6 +52,35 @@ MDLINK_RE = re.compile(r'\[([^\]\n]{2,90})\]\((https?://[^)\s]+)\)')
 GENERIC_LINK_TEXT = set('here link this thread message slack notion page source permalink url doc ticket it'.split())
 TAG_RE = re.compile(r'</?[a-zA-Z][a-zA-Z0-9_\-]*(?:\s[^<>\n]{0,200})?>')
 RECAP_TAIL_RE = re.compile(r'\s*\(disable recaps in /config\)\s*$')
+# Status reports (optional, see README "Status reports"): a session that was started with a first prompt
+# containing these two lines tells the board its intended name and where it will write its report.
+HELPER_NAME_RE = re.compile(r'You are the helper "([^"\n]{1,120})"')
+HELPER_REPORT_RE = re.compile(r'(?:Report file|HQ reads): (/\S+\.md)')
+# An older form of the same: "<name> (launched by HQ from the Session Canvas)"
+CANVAS_PEER_RE = re.compile(r'^(?:/\S+ )?(.{3,60}?) \((?:[^()\n]{0,20}, )?launched by HQ from the Session Canvas\)')
+WEEKDAY_TAG_RE = re.compile(r'^(?:W\d\d\s*·\s*)+')
+REPORT_KEY_RE = re.compile(r'^(status|name|outcome|left)\s*:\s*(.*)$', re.I)
+# Optional lines anywhere in a report (v1.2): `sent: <permalink>`, `replaces: slug, slug`, `replaced-by: slug`
+REPORT_EXTRA_RE = re.compile(r'^(sent|replaces|replaced-by)\s*:\s*(.*)$', re.I)
+QUESTION_STATUS = ('question', 'needs-clarification', 'needs-answer', 'needs-input', 'clarify')
+_QUESTION_RES = {}
+
+
+def question_re(user_name=''):
+    """A `your-turn` report that really asks the person to answer or decide something (not to send / review /
+    approve): its last words end with "?", or it says "<your name> picks / decides / answers ..." when the
+    name is set in Settings -> Advanced."""
+    name = ' '.join((user_name or '').split())[:40]
+    if name not in _QUESTION_RES:
+        pat = r"\?\s*$"
+        if name:
+            pat = (r"\b%s\b[^.;→\n]{0,60}?\b(picks?|pick(?:ing)?|choos\w+|decid\w+|answers?|answering|clarif\w+)\b|"
+                   % re.escape(name)) + pat
+        _QUESTION_RES[name] = re.compile(pat, re.I)
+    return _QUESTION_RES[name]
+
+
+NO_VALUE = ('', '-', 'no', 'none', 'n/a', 'not yet', 'false')
 CONTINUED_PREFIX = 'This session is being continued from a previous conversation'
 
 # ---- keyword extraction -------------------------------------------------------------------------
@@ -300,6 +330,7 @@ def parse_session(path):
     first_ts = last_ts = None
     first_prompt_ts = None
     ai_title = custom_title = agent_name = None
+    helper_name = helper_report = None
     continued_in = None
     worktree = None
     relocated = None
@@ -448,6 +479,14 @@ def parse_session(path):
                     if first_prompt is None:
                         first_prompt = text
                         first_prompt_ts = ts
+                        if 'You are the helper' in text:
+                            hm = HELPER_NAME_RE.search(text)
+                            helper_name = hm.group(1).strip() if hm else None
+                            hm = HELPER_REPORT_RE.search(text)
+                            helper_report = hm.group(1) if hm else None
+                        if not helper_name:
+                            hm = CANVAS_PEER_RE.match(text)
+                            helper_name = hm.group(1).strip() if hm else None
                         for m in UUID_RE.finditer(text[:2000]):
                             if m.group(0) != sid and m.group(0) not in refs:
                                 refs.append(m.group(0))
@@ -589,6 +628,7 @@ def parse_session(path):
         'cwd': resume_cwd, 'cwdFirst': cwd_first, 'worktree': worktree,
         'entry': entry, 'bg': bg, 'kind': kind,
         'title': title, 'titleSource': title_src,
+        'helperName': helper_name, 'helperReport': helper_report,
         'start': start_ms, 'end': end_ms, 'firstPromptAt': iso_to_ms(first_prompt_ts) if first_prompt_ts else None,
         'prompts': prompts, 'replies': replies, 'tools': tools, 'compactions': compactions,
         'startsWithCompact': starts_with_compact,
@@ -724,24 +764,296 @@ EDGE_WHY = {
 }
 
 
-def read_runs(work_root):
-    """Optional: rows of <work folder>/.state/sessions/<date>/runs.tsv, a log some launcher scripts keep of the
-    background sessions they start (id8, name, kind, model, skill, time). Nothing breaks when it is absent."""
+def report_dirs_of(dirs):
+    """The report folders that exist, as real paths without doubles (a string or a list is fine)."""
+    if isinstance(dirs, str):
+        dirs = [dirs]
+    out = []
+    for d in dirs or []:
+        if not isinstance(d, str) or not d.strip():
+            continue
+        rp = os.path.realpath(os.path.expanduser(d.strip()))
+        if os.path.isdir(rp) and rp not in out:
+            out.append(rp)
+    return out
+
+
+def read_runs(report_dirs):
+    """Optional: rows of <report folder>/<date>/runs.tsv, a log some launcher scripts keep of the background
+    sessions they start (id8, name, kind, model, skill, time, report file). Nothing breaks when it is absent."""
     rows = []
-    if not work_root:
-        return rows
-    for f in sorted(glob.glob(os.path.join(work_root, '.state', 'sessions', '*', 'runs.tsv'))):
-        date = os.path.basename(os.path.dirname(f))
+    for d in report_dirs_of(report_dirs):
+        for f in sorted(glob.glob(os.path.join(d, '*', 'runs.tsv'))):
+            date = os.path.basename(os.path.dirname(f))
+            try:
+                with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+                    for line in fh:
+                        p = line.rstrip('\n').split('\t')
+                        if len(p) >= 6 and re.match(r'^[0-9a-f]{8}$', p[0]):
+                            rows.append({'date': date, 'id8': p[0], 'name': p[1], 'kind': p[2], 'model': p[3],
+                                         'skill': p[4], 'time': p[5], 'report': p[6] if len(p) > 6 else None})
+            except OSError:
+                continue
+    return rows
+
+
+def clean_name(name):
+    """A helper's name without the day tag: 'W16·W16·AI vs manual' -> 'AI vs manual' (the card shows the date anyway)."""
+    n = ' '.join((name or '').split())
+    return WEEKDAY_TAG_RE.sub('', n).strip() or n
+
+
+def parse_report(path, user_name=''):
+    """The head of a helper report file (status / name / outcome / left). None if it is not a report.
+
+    Optional lines, anywhere in the file, at the start of a line:
+      sent: <permalink or a few words>      what the card waited for has been sent -> the card counts as done
+      replaces: slug, slug                  this session took over from those (their cards grey out)
+      replaced-by: slug                     a newer session took over from this one
+    A slug is a report's file name without ".md" (add "YYYY-MM-DD/" for another day); a helper's name works too.
+    """
+    try:
+        st = os.stat(path)
+        with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+            all_lines = fh.read(24000).split('\n')
+    except OSError:
+        return None
+    lines = all_lines[:14]
+    r = {'status': '', 'name': '', 'outcome': '', 'left': ''}
+    key = None
+    extra = []
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        m = REPORT_KEY_RE.match(s)
+        if m and not r[m.group(1).lower()]:
+            key = m.group(1).lower()
+            r[key] = m.group(2).strip()
+            continue
+        if i == 0:
+            return None                       # a report starts with its header
+        if not s:
+            key = None
+            continue
+        if REPORT_EXTRA_RE.match(s):
+            key = None
+            continue
+        if key == 'left' and r['left'].endswith(':'):
+            r['left'] += ' ' + s              # "left: you must answer:" + the first question
+        elif len(extra) < 2:
+            extra.append(s)
+        key = None
+    status = r['status'].lower().replace(' ', '-').replace('_', '-')
+    if status in QUESTION_STATUS:
+        status = 'question'
+    if status not in ('done', 'not-done', 'your-turn', 'question'):
+        return None
+    more = {'sent': '', 'replaces': '', 'replaced-by': ''}
+    for ln in all_lines:
+        m = REPORT_EXTRA_RE.match(ln.strip())
+        if m and m.group(2).strip().lower() not in NO_VALUE:
+            more[m.group(1).lower()] = m.group(2).strip()          # the last such line wins
+    if not r['outcome'] and extra:
+        r['outcome'] = first_sentences('\n'.join(extra), 220)
+        r['outcome'] = re.sub(r'^TL;DR[:\s]*', '', r['outcome'])
+    strip = lambda t, n: squash(re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', t), n)
+    # an older `your-turn` report whose words ask for an answer or a decision: shown as "needs your answer"
+    ask = status == 'your-turn' and bool(question_re(user_name).search(r['left'] or r['outcome']))
+    out = {'status': status, 'name': clean_name(r['name']), 'outcome': strip(r['outcome'], 220),
+           'left': strip(r['left'], 220), 'at': int(st.st_mtime * 1000),
+           'sent': squash(more['sent'], 300),
+           'replaces': [t.strip() for t in re.split(r'[,;]', more['replaces']) if t.strip()],
+           'replacedBy': more['replaced-by'],
+           'slug': os.path.splitext(os.path.basename(path))[0], 'day': os.path.basename(os.path.dirname(path))}
+    if ask:
+        out['ask'] = True                     # read from the words, not from `status: question`
+    # what a mark made on the board ("Done", "Sent", "Replaced by") was about: a changed header ends the mark
+    out['sig'] = hashlib.md5('|'.join([status, out['outcome'], out['left'], out['sent'], out['replacedBy']])
+                             .encode('utf-8')).hexdigest()[:10]
+    return out
+
+
+def report_files(report_dirs):
+    """Every file that could be a report or a list of runs, with its change time (to notice new reports).
+    A report folder holds reports directly (<folder>/<name>.md) or one folder per day (<folder>/<date>/<name>.md)."""
+    out = []
+    for d in report_dirs_of(report_dirs):
+        for pat in (('*', '*.md'), ('*', 'runs.tsv'), ('*.md',), ('runs.tsv',)):
+            for f in glob.glob(os.path.join(d, *pat)):
+                try:
+                    out.append((f, os.stat(f).st_mtime_ns))
+                except OSError:
+                    pass
+    out.sort()
+    return out
+
+
+def match_reports(metas, report_dirs, runs, rel_root=None, user_name=''):
+    """Which report belongs to which session: {sid: {'name', 'report'}}.
+
+    1. by session id: runs.tsv lists the first 8 characters of the id next to the report file;
+    2. sessions in a window (no row in runs.tsv): the report path and name are in the session's first prompt;
+    3. by name: a report in that day's folder whose `name:` is the session's title.
+    """
+    out = {}
+    dirs = report_dirs_of(report_dirs)
+    if not dirs:
+        return out
+    bases = [d + os.sep for d in dirs]
+    rel = (os.path.realpath(rel_root) + os.sep) if rel_root else None
+    files = [f for f, _ in report_files(dirs) if f.endswith('.md')]
+    parsed = {}
+
+    def report(path):
+        if not path:
+            return None
+        rp = os.path.realpath(path)
+        if not any(rp.startswith(b) for b in bases):
+            return None                       # only ever read files inside the report folders
+        if rp not in parsed:
+            r = parse_report(rp, user_name)
+            if r:
+                r['file'] = rp[len(rel):] if rel and rp.startswith(rel) else rp
+            parsed[rp] = r
+        return parsed[rp]
+
+    by8 = {}
+    for r in runs:
+        by8[r['id8']] = r
+    for d in dirs:                            # an older, flat list: <folder>/runs.tsv = date, time, label, id8, model, report
         try:
-            with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+            with open(os.path.join(d, 'runs.tsv'), 'r', encoding='utf-8', errors='replace') as fh:
                 for line in fh:
                     p = line.rstrip('\n').split('\t')
-                    if len(p) >= 6 and re.match(r'^[0-9a-f]{8}$', p[0]):
-                        rows.append({'date': date, 'id8': p[0], 'name': p[1], 'kind': p[2], 'model': p[3],
-                                     'skill': p[4], 'time': p[5]})
+                    if len(p) >= 6 and re.match(r'^[0-9a-f]{8}$', p[3]) and p[3] not in by8:
+                        by8[p[3]] = {'name': os.path.basename(d).capitalize() + '·' + p[2], 'report': p[5]}
         except OSError:
+            pass
+    by_name = {}
+    for f in files:
+        r = report(f)
+        if r and r['name']:
+            by_name[(os.path.basename(os.path.dirname(f)), r['name'].lower())] = r
+    for sid, m in metas.items():
+        run = by8.get(sid[:8])
+        rep = name = None
+        if run:
+            rep, name = report(run.get('report')), run.get('name')
+        elif m.get('helperReport') or m.get('helperName'):
+            rep, name = report(m.get('helperReport')), m.get('helperName')
+        else:
+            t = clean_name(m.get('title'))
+            start = m.get('start')
+            if t and start:
+                rep = by_name.get((time.strftime('%Y-%m-%d', time.localtime(start / 1000.0)), t.lower()))
+        if rep or name:
+            out[sid] = {'name': (rep or {}).get('name') or clean_name(name), 'report': rep}
+    link_replacements(out)
+    return out
+
+
+def _slug_token(token):
+    """'2026-11-17/daily-follow-ups.md' -> ('2026-11-17', 'daily-follow-ups'); 'W17·Daily follow-ups' -> (None, ...)."""
+    t = (token or '').strip().strip('`"\'')
+    day = None
+    m = re.search(r'(\d{4}-\d{2}-\d{2})/([^/]+)$', t)
+    if m:
+        day, t = m.group(1), m.group(2)
+    elif '/' in t:
+        t = t.rsplit('/', 1)[1]
+    if t.lower().endswith('.md'):
+        t = t[:-3]
+    return day, t.strip()
+
+
+def link_replacements(out):
+    """Fill in 'replacedBy' ({'id', 'name'}) from the `replaces:` and `replaced-by:` lines of the reports.
+
+    Only explicit lines count: nothing is guessed from names or times."""
+    by_slug, by_name = {}, {}
+    for sid, h in out.items():
+        rep = h.get('report')
+        if rep:
+            by_slug.setdefault(rep['slug'].lower(), []).append((rep['day'], sid))
+        nm = clean_name(h.get('name') or '').lower()
+        if nm:
+            by_name.setdefault(nm, []).append(((rep or {}).get('day') or '', sid))
+
+    def find(token, day, me):
+        want_day, t = _slug_token(token)
+        for table, k in ((by_slug, t.lower()), (by_name, clean_name(t).lower())):
+            cands = [c for c in table.get(k, []) if c[1] != me]
+            if want_day:
+                cands = [c for c in cands if c[0] == want_day]
+            if not cands:
+                continue
+            same = [c for c in cands if c[0] == day]
+            return (same or sorted(cands))[-1][1]          # same day first, else the newest day
+        return None
+
+    for sid in sorted(out):
+        rep = out[sid].get('report')
+        if not rep:
             continue
-    return rows
+        for token in rep.get('replaces') or []:
+            target = find(token, rep['day'], sid)
+            if target:
+                out[target]['replacedBy'] = {'id': sid, 'name': out[sid]['name']}
+    for sid in sorted(out):
+        rep = out[sid].get('report')
+        if rep and rep.get('replacedBy'):
+            newer = find(rep['replacedBy'], rep['day'], sid)
+            out[sid]['replacedBy'] = {'id': newer, 'name': out[newer]['name'] if newer else clean_name(_slug_token(rep['replacedBy'])[1])}
+
+
+WAITING = ('question', 'your-turn')
+
+
+def card_state(session, marks=None, active=False):
+    """Where a card stands (the same rule as SC.stateOf in web/model.js):
+    question | your-turn | running | not-done | done | replaced | '' (no status), plus why.
+
+    A mark made on the board (Done / Sent / Replaced by) wins while the report's header is the one it was made on."""
+    rep = session.get('report') or None
+    mark = (marks or {}).get(session.get('id'))
+    if isinstance(mark, dict) and mark.get('kind') in ('done', 'sent', 'replaced'):
+        if not mark.get('sig') or not rep or mark.get('sig') == rep.get('sig'):
+            if mark['kind'] == 'replaced':
+                return {'state': 'replaced', 'by': mark.get('by'), 'why': 'mark'}
+            return {'state': 'done', 'why': 'mark-' + mark['kind']}
+    rb = session.get('replacedBy')
+    if rb:
+        return {'state': 'replaced', 'by': rb.get('id'), 'byName': rb.get('name'), 'why': 'report'}
+    if rep:
+        st = rep.get('status')
+        if st in WAITING:
+            if rep.get('sent'):
+                return {'state': 'done', 'why': 'sent'}
+            return {'state': 'question' if rep.get('ask') else st, 'why': 'report'}
+        if st == 'not-done':
+            return {'state': 'running' if active else 'not-done', 'why': 'report'}
+        return {'state': 'done', 'why': 'report'}
+    return {'state': 'running' if active else '', 'why': 'live' if active else ''}
+
+
+def waiting_list(sessions, marks=None):
+    """Every card that waits on the person, the one that has waited longest first.
+    Two sessions that point at the same report file are one thing to do: only the newer session is listed."""
+    out = []
+    seen = {}
+    for s in sorted(sessions, key=lambda x: (x.get('start') or 0, x.get('id') or ''), reverse=True):
+        st = card_state(s, marks)
+        if st['state'] not in WAITING:
+            continue
+        rep = s.get('report') or {}
+        if rep.get('file'):
+            if rep['file'] in seen:
+                continue
+            seen[rep['file']] = True
+        out.append({'id': s['id'], 'name': s.get('name') or s.get('title') or '', 'state': st['state'],
+                    'since': rep.get('at') or s.get('end') or 0, 'left': rep.get('left') or '',
+                    'outcome': rep.get('outcome') or '', 'file': rep.get('file') or '', 'sig': rep.get('sig') or ''})
+    out.sort(key=lambda w: (w['since'], w['id']))
+    return out
 
 
 def _born(m):
@@ -1068,10 +1380,13 @@ def make_about(m):
 # ---- the index -----------------------------------------------------------------------------------
 
 class Index(object):
-    def __init__(self, cache_dir, projects_root=None, work_root=None, use_pool=True):
+    def __init__(self, cache_dir, projects_root=None, work_root=None, use_pool=True, report_dirs=None, user_name=''):
         self.cache_dir = cache_dir
         self.projects_root = projects_root or os.path.join(os.path.expanduser('~'), '.claude', 'projects')
         self.work_root = work_root
+        # Status reports are optional and off until a folder is set (Settings -> Advanced)
+        self.report_dirs = report_dirs_of(report_dirs)
+        self.user_name = user_name or ''
         self.use_pool = use_pool
         self.lock = threading.RLock()
         self.metas = {}          # path -> meta
@@ -1087,6 +1402,7 @@ class Index(object):
         self.errors = []
         self._payload = None
         self._details = {}
+        self._report_sig = None
         os.makedirs(cache_dir, exist_ok=True)
 
     # -- cache --
@@ -1167,7 +1483,9 @@ class Index(object):
             results = []
             if todo:
                 results = self._parse_many(todo)
-            changed = bool(results or gone or first)
+            rsig = (tuple(self.report_dirs), self.user_name, self.work_root, report_files(self.report_dirs))
+            changed = bool(results or gone or first or rsig != self._report_sig)
+            self._report_sig = rsig
             if results or gone:
                 db = self._db()
                 for path, res, err in results:
@@ -1248,11 +1566,12 @@ class Index(object):
             if (m.get('prompts') or 0) + (m.get('replies') or 0) == 0:
                 continue                      # opened and closed without a conversation
             by_id[m['id']] = m
-        runs = read_runs(self.work_root)
+        runs = read_runs(self.report_dirs)
         run_by8 = {}
         for r in runs:
             run_by8[r['id8']] = r
         edges, own_start = detect_relations(by_id, self.uu, runs)
+        helpers = match_reports(by_id, self.report_dirs, runs, rel_root=self.work_root, user_name=self.user_name)
         keywords = compute_keywords(by_id)
         # Jira keys (ABC-123) count only for projects seen in a real Jira link, and link to that same site.
         prefixes = set()
@@ -1286,8 +1605,17 @@ class Index(object):
             run = run_by8.get(sid[:8])
             cmds = sorted((m.get('commands') or {}).items(), key=lambda kv: (-kv[1], kv[0]))
             about = make_about(m)
+            helper = helpers.get(sid) or {}
+            recaps = m.get('recaps') or []
             s = {
                 'id': sid, 'title': m.get('title') or '', 'titleSource': m.get('titleSource'),
+                # the name to show (with reports on: the name the session was given, without a "W16·" day tag)
+                'name': helper.get('name') or clean_name(m.get('title')),
+                # the helper's own report (status / outcome / left), else the end of its last message
+                'report': helper.get('report'),
+                # a newer session took over (a `replaces:` / `replaced-by:` line in a report): {'id', 'name'}
+                'replacedBy': helper.get('replacedBy'),
+                'last': squash(recaps[-1], 200) if recaps else first_sentences(m.get('lastReply') or '', 200),
                 'project': pkey, 'projectLabel': plabel, 'worktree': (wt or {}).get('name'),
                 'cwd': cwd, 'kind': m.get('kind'), 'run': (run or {}).get('kind'),
                 'start': start, 'end': end, 'historyStart': m.get('start'),
@@ -1304,6 +1632,7 @@ class Index(object):
             sessions.append(s)
             details[sid] = {
                 'id': sid, 'path': m.get('path'), 'cwd': cwd, 'cwdExists': None,
+                'title': m.get('title') or '',
                 'fallbackCwd': (wt or {}).get('original'),
                 'links': links, 'commands': cmds,
                 'firstPrompt': m.get('firstPrompt') or '', 'firstReply': m.get('firstReply') or '',
@@ -1316,7 +1645,7 @@ class Index(object):
         self._payload = {
             'sessions': sessions, 'edges': edges,
             'projects': sorted(projects.values(), key=lambda p: -p['count']),
-            'home': home, 'defaultCwd': self.work_root,
+            'home': home, 'defaultCwd': self.work_root, 'statusOn': bool(self.report_dirs),
         }
 
     # -- queries --
@@ -1346,6 +1675,11 @@ class Index(object):
         with self.lock:
             d = self._details.get(sid)
             return d.get('cwd') if d else None
+
+    def session_title(self, sid):
+        with self.lock:
+            d = self._details.get(sid)
+            return d.get('title') if d else None
 
     def session_fallback_cwd(self, sid):
         with self.lock:

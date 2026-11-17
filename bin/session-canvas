@@ -5,6 +5,7 @@
 #   session-canvas setup        open the board with the setup wizard
 #   session-canvas uninstall    remove the app (asks before deleting your board data)
 #   session-canvas version      print the version
+#   session-canvas update       get the newest version from GitHub (your board and settings are kept)
 #   options: --dry-run (test mode: buttons only show the command) · --no-open (don't open the browser) · --port N
 
 set -u
@@ -22,12 +23,12 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 CMD=start; DRY=0; OPEN=1; PORTARG=${CANVAS_PORT:-7788}; YES=0
 while (( $# )); do
   case $1 in
-    start|stop|status|restart|setup|uninstall|version) CMD=$1 ;;
+    start|stop|status|restart|setup|uninstall|version|update) CMD=$1 ;;
     --dry-run) DRY=1 ;;
     --no-open) OPEN=0 ;;
     --yes|-y) YES=1 ;;
     --port) shift; PORTARG=${1:-7788} ;;
-    -h|--help|help) sed -n '2,8p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help|help) sed -n '2,9p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) print -u2 "session-canvas: don't know '$1' (try: session-canvas --help)"; exit 2 ;;
   esac
   shift
@@ -40,6 +41,7 @@ if [[ $CMD == uninstall ]]; then
 fi
 [[ -x $PY ]] || { print -u2 "session-canvas: /usr/bin/python3 is missing. Run: xcode-select --install"; exit 1; }
 [[ -f $APP/server.py ]] || { print -u2 "session-canvas: the app is not at $APP. Reinstall with ./install.sh"; exit 1; }
+if [[ $CMD == update ]]; then exec $PY "$APP/updater.py" update --home "$APP_HOME"; fi
 [[ $PORTARG == <1024-65535> ]] || { print -u2 "session-canvas: --port must be a number from 1024 to 65535"; exit 2; }
 mkdir -p "$CACHE"
 

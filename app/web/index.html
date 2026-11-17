@@ -25,6 +25,7 @@
     <button data-layout="tree" title="Who started or continued whom (press 1)">Tree</button>
     <button data-layout="timeline" title="Days left to right: see progress (press 2)">Timeline</button>
     <button data-layout="free" title="Drag cards anywhere; places are remembered (press 3)">Free</button>
+    <button data-layout="status" title="Where everything stands: needs your answer, your turn, running, done (press 4)">Status</button>
   </div>
   <label class="sel" title="What the card colour means">Colour
     <select id="colorBy">
@@ -34,6 +35,7 @@
     </select>
   </label>
   <button id="btnFilters" class="btn" title="Show only some sessions">Filters<span class="count" id="filterCount" hidden></span></button>
+  <button id="btnWait" class="btn" title="Everything that waits on you, oldest first (press W)">Your turn<span class="wcount q" id="waitQ" hidden></span><span class="wcount y" id="waitY" hidden></span></button>
 
   <div id="search">
     <span class="mag"></span>
@@ -66,6 +68,8 @@
 <div id="hovercard" hidden></div>
 <div id="edgebar" class="floatbar" hidden></div>
 <div id="notebar" class="floatbar" hidden></div>
+<div id="cardbar" class="floatbar" hidden></div>
+<aside id="waitlist" hidden aria-label="Waiting on you"></aside>
 
 <div id="mapwrap" title="Map of the whole board: click or drag to move">
   <canvas id="minimap" width="220" height="140"></canvas>

@@ -13,3 +13,4 @@ screenshots/
 *.bak
 *.command
 .state/
+.privacy-words

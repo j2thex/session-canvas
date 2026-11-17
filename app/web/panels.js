@@ -5,6 +5,7 @@
   const $ = id => document.getElementById(id);
   const ui = SC.ui;
   const panel = $('panel'), hover = $('hovercard'), notesEl = $('notes'), notebar = $('notebar'), edgebar = $('edgebar');
+  const cardbar = $('cardbar'), waitEl = $('waitlist');
   SC.noteXY = new Map();
 
   // ---- toasts and dialogs ----
@@ -132,8 +133,13 @@
     const what = '“' + U.short(SC.titleOf(s), 50) + '”';
     await SC.refreshLive();
     if (SC.isOpen(s)) {
+      // already open: bring its window to the front instead of asking
+      let f = null;
+      try { f = await SC.api.post('/api/focus', { sessionId: s.id }); } catch (e) { f = null; }
+      if (f && f.focused) { SC.toast(f.message || 'Brought its window to the front.'); return f; }
+      const why = f && f.message ? f.message + ' ' : '';
       const v = await SC.ask('This session is already open',
-        '<p>' + E(openNote(s)) + ' Find that window instead: opening it twice makes two windows write to the same conversation.</p>',
+        '<p>' + E(openNote(s)) + ' ' + E(why) + (f && f.reason === 'background' ? 'Fork it to work on a copy in a window. Opening it twice' : 'Find that window instead: opening it twice') + ' makes two windows write to the same conversation.</p>',
         [{ label: 'Cancel', value: null, cls: 'accent', focus: true }, { label: 'Open a copy (fork)', value: 'fork' }, { label: 'Open a second window anyway', value: 'resume', cls: 'danger' }]);
       if (!v) return;
       return SC.doSpawn({ action: v, sessionId: s.id }, what);
@@ -204,7 +210,7 @@
       '</div>');
 
     h.push('<div class="sec"><div class="acts">' +
-      '<button class="btn accent" data-act="resume" title="Open this session again in a new Terminal window">Resume</button>' +
+      '<button class="btn accent" data-act="resume" title="' + (s.active ? 'It is open: bring its window to the front' : 'Open this session again in a new Terminal window') + '">' + (s.active ? 'Go to window' : 'Resume') + '</button>' +
       '<button class="btn" data-act="fork" title="Open a copy with the same history; the original stays as it is">Fork (copy)</button>' +
       '<button class="btn" data-act="new" title="Start an empty session in the same folder">New session here</button>' +
       '<button class="btn" data-act="copyid" title="Copy the session id">Copy id</button></div>' +
@@ -218,6 +224,22 @@
       (d && d.cwdExists === false ? '<div class="warnbox">The folder this session ran in no longer exists, so Resume and Fork may not find it.</div>' : '') +
       '</div>');
 
+    if (SC.data.statusOn) {
+      const stt = SC.stateOf(s), btns = stateButtons(stt, true);
+      h.push('<div class="sec status"><h3>Where it stands</h3><div class="strow">' + stateBadge(stt) +
+        (stt.key ? '<span class="muted">' + E(stt.info.hint) + (stt.note ? ' · ' + E(stt.note) : '') + '</span>' : '<span class="muted">no status: it wrote no report and is not open</span>') + '</div>' +
+        (stt.key === 'replaced' ? '<div class="rel"><span class="k">Replaced by</span>' + (stt.by && stt.by.id ? '<button class="go" data-act="go" data-id="' + stt.by.id + '" title="Go to the session that took over">' + E(stt.by.name) + '</button>' : '<span class="muted">' + E(stt.by ? stt.by.name : 'a newer session (not named)') + '</span>') + '</div>' : '') +
+        (stt.sent || (s.report && s.report.sent) ? '<div class="about"><b>Sent:</b> ' + linkify(stt.sent || s.report.sent) + '</div>' : '') +
+        (btns ? '<div class="acts2">' + btns + '</div>' : '') + '</div>');
+    }
+    if (s.report) {
+      const r = s.report, si = SC.STATUS[r.status];
+      h.push('<div class="sec latest"><h3>Latest (its report)</h3>' +
+        '<div><span class="badge" style="background:' + si.color + ';border-color:' + si.color + ';color:#10151d">' + E(si.label.toLowerCase()) + '</span> <span class="muted">' + E(U.ago(r.at)) + '</span></div>' +
+        (r.outcome ? '<div class="about"><b>Done:</b> ' + E(r.outcome) + '</div>' : '') +
+        (r.left ? '<div class="about"><b>Left:</b> ' + E(r.left) + '</div>' : '') +
+        '<div class="muted" style="font-size:11px;word-break:break-all">' + E(r.file || '') + '</div></div>');
+    }
     h.push('<div class="sec"><h3>What it was about</h3><div class="about">' + E(s.about || 'No summary available.') + '</div>');
     if (d && d.recaps && d.recaps.length > 1) {
       for (const r of d.recaps.slice(0, -1).slice(-2)) h.push('<div class="recap">' + E(r) + '</div>');
@@ -231,7 +253,7 @@
       '<div class="field"><label>Colour</label><div class="swatches">' +
       SC.PALETTE.map(c => '<button class="sw' + (st.colors[s.id] === c ? ' on' : '') + '" data-act="color" data-v="' + c + '" style="background:' + c + '" title="Use this colour"></button>').join('') +
       '<button class="sw none" data-act="color" data-v="" title="Back to automatic colour">&times;</button></div></div>' +
-      (renamed ? '<div class="field"><label>Name</label><span class="muted" style="flex:1;color:var(--muted)">was: ' + E(U.short(s.title, 40)) + '</span><button class="linkbtn" data-act="resetname">Reset</button></div>' : '') +
+      (renamed ? '<div class="field"><label>Name</label><span class="muted" style="flex:1;color:var(--muted)">was: ' + E(U.short(SC.baseName(s), 40)) + '</span><button class="linkbtn" data-act="resetname">Reset</button></div>' : '') +
       '</div>');
 
     // links found in the conversation
@@ -322,7 +344,7 @@
       const v = inp.value.trim();
       if (save && v !== SC.titleOf(s)) {
         SC.checkpoint('rename');
-        if (!v || v === s.title) delete SC.state.titles[s.id]; else SC.state.titles[s.id] = v;
+        if (!v || v === SC.baseName(s)) delete SC.state.titles[s.id]; else SC.state.titles[s.id] = v;
         SC.touch('titles');
         SC.prepSearch();
         SC.reprep();
@@ -332,6 +354,7 @@
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); finish(true); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); } });
     inp.addEventListener('blur', () => finish(true));
   }
+  SC.startRename = startRename;
 
   panel.addEventListener('click', e => {
     const t = e.target.closest('[data-act]');
@@ -372,6 +395,7 @@
       case 'kw': SC.setSearchText(t.dataset.v); break;
       case 'cmd': SC.toggleCommandFilter(t.dataset.v); break;
       case 'go': SC.jumpToNode(t.dataset.id); break;
+      case 'st-sent': case 'st-done': case 'st-replaced': case 'st-reopen': case 'st-gonew': stateAction(id, t.dataset.act.slice(3)); break;
       case 'gonote': SC.selectNote(t.dataset.id, true); break;
       case 'unlink':
         SC.removeLink(t.dataset.id);
@@ -415,7 +439,10 @@
         if (links.length < 7) links.push('<a href="' + E(x.url) + '" target="_blank" rel="noopener noreferrer">' + E(U.short(x.label, 34)) + '</a>');
       }
     }
-    hover.innerHTML = '<div class="t">' + E(SC.titleOf(s)) + '</div><div class="a">' + E(s.about || '') + '</div>' +
+    const lt = SC.latestOf(s), lsi = SC.STATUS[lt.status];
+    hover.innerHTML = '<div class="t">' + E(SC.titleOf(s)) + '</div>' +
+      (lsi ? '<div class="a"><span class="badge" style="background:' + lsi.color + ';border-color:' + lsi.color + ';color:#10151d">' + E(lsi.label.toLowerCase()) + '</span> ' + E(lt.text) + '</div>' : '') +
+      '<div class="a">' + E(s.about || '') + '</div>' +
       (s.commands.length ? '<div class="l">' + s.commands.slice(0, 4).map(c => '<span class="chip cmd" style="cursor:default">' + E(c) + '</span>').join('') + '</div>' : '') +
       (links.length ? '<div class="l">' + links.join('') + '</div>' : (d ? '' : '<div class="m">Loading links…</div>')) +
       '<div class="m">' + E(U.fmtDateTime(s.start)) + ' · ' + s.msgs + ' messages · ' + E(SC.KIND_ONE[s.kind]) + ' · click the card for more</div>';
@@ -705,6 +732,15 @@
         notebar.style.top = Math.round(U.clamp(a.y - 42, SC.CONST.TOP + 6, SC.vh - 70)) + 'px';
       }
     }
+    if (!cardbar.hidden && ui.sel && ui.sel.type === 'node') {
+      const n = SC.nodes.get(ui.sel.id);
+      if (n && n.vis) {
+        const a = SC.toScreen(n.rx === undefined ? n.x : n.rx, n.ry === undefined ? n.y : n.ry);
+        const limitR = SC.vw - (ui.panelOpen ? SC.CONST.PANEL_W : 0);
+        cardbar.style.left = Math.round(U.clamp(a.x, 8, Math.max(8, limitR - cardbar.offsetWidth - 8))) + 'px';
+        cardbar.style.top = Math.round(U.clamp(a.y - 42, SC.CONST.TOP + 6, SC.vh - 70)) + 'px';
+      }
+    }
     if (!edgebar.hidden && ui.sel && ui.sel.type === 'edge' && ui.edgeAt) {
       const a = SC.toScreen(ui.edgeAt.x, ui.edgeAt.y);
       edgebar.style.left = Math.round(U.clamp(a.x + 10, 8, SC.vw - edgebar.offsetWidth - 8)) + 'px';
@@ -722,6 +758,152 @@
     SC.positionBars();
   };
   edgebar.addEventListener('click', e => { if (e.target.closest('[data-a="del"]')) SC.deleteSelection(); });
+
+  // ---- where a card stands: Done / Sent / Replaced by (on the card, in the panel, in the "Your turn" list) ----
+  function stateDot(key) { return '<span class="st st-' + key + '" style="--c:' + SC.STATES[key].color + '"></span>'; }
+  SC.stateDot = stateDot;
+  function stateBadge(st) {
+    if (!st.key) return '<span class="badge">no status</span>';
+    return '<span class="badge stbadge" style="background:' + st.info.color + ';border-color:' + st.info.color + ';color:' + st.info.ink + '">' + E(st.info.zone) + '</span>';
+  }
+  function linkify(text) {
+    return E(text).replace(/https?:\/\/[^\s<]+/g, u => '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + (u.length > 46 ? u.slice(0, 44) + '…' : u) + '</a>');
+  }
+  /* The buttons that make sense for a card. full = the side panel (also for cards without a status). */
+  function stateButtons(st, full) {
+    const b = [], pre = full ? 'data-act="st-' : 'data-a="';
+    const btn = (a, label, title, cls) => '<button class="btn' + (cls ? ' ' + cls : '') + '" ' + pre + a + '" title="' + E(title) + '">' + E(label) + '</button>';
+    if (!full && st.key === 'replaced' && st.by && st.by.id) b.push(btn('gonew', '→ ' + U.short(st.by.name, 26), 'Go to the session that took over'));
+    if (st.mark) b.push(btn('reopen', 'Reopen', 'Take your mark off: the card shows what its report says again'));
+    else if (st.key !== 'replaced') {
+      const live = st.key === 'question' || st.key === 'your-turn' || st.key === 'not-done';
+      if (st.info && st.info.wait) b.push(btn('sent', 'Sent', 'You sent or posted it yourself: the card becomes Done', 'accent'));
+      if (st.key !== 'done' && (full || live)) b.push(btn('done', 'Mark done', 'Nothing left for you here: the card becomes Done'));
+      if (full || live) b.push(btn('replaced', 'Replaced by…', 'A newer session took over: this card greys out and points to it'));
+    }
+    return b.join('');
+  }
+  function stateAction(id, act) {
+    const s = SC.data.byId.get(id);
+    if (!s) return;
+    if (act === 'gonew') { const st = SC.stateOf(s); if (st.by && st.by.id) SC.jumpToNode(st.by.id); return; }
+    if (act === 'replaced') { SC.pickReplacement(id); return; }
+    SC.markCard(id, act === 'reopen' ? null : act);
+  }
+  SC.markCard = function (id, kind, by) {
+    const s = SC.data.byId.get(id);
+    if (!s || !SC.setMark(id, kind, by)) return;
+    SC.reprep();
+    SC.afterStateChange(true);
+    const what = kind === 'sent' ? 'Sent, so done' : kind === 'done' ? 'Marked done' : kind === 'replaced' ? 'Marked as replaced' : 'Reopened';
+    SC.toast(what + ': ' + U.short(SC.titleOf(s), 44), { action: { label: 'Undo', fn: () => SC.doUndo() } });
+  };
+  SC.pickReplacement = function (id) {
+    const s = SC.data.byId.get(id);
+    if (!s) return;
+    const dlg = SC.modal('<h3>Which session took over from “' + E(U.short(SC.titleOf(s), 60)) + '”?</h3>' +
+      '<p class="muted">This card greys out and points to the newer one. Undo with ⌘Z or “Reopen”.</p>' +
+      '<input type="search" id="repFind" placeholder="Find the newer session by name…" autocomplete="off" data-autofocus><div class="pick" id="repPick"></div>' +
+      '<div class="btns"><button class="btn" data-a="none" title="Grey it out without pointing anywhere">Replaced, no newer session</button><button class="btn accent" data-a="close">Cancel</button></div>');
+    const find = dlg.querySelector('#repFind'), pick = dlg.querySelector('#repPick');
+    const all = SC.data.sessions.filter(o => o.id !== id && o.kind !== 'auto').sort((a, b) => b.start - a.start);
+    const fill = () => {
+      const q = U.norm(find.value.trim());
+      const rows = all.filter(o => !q || U.norm(SC.titleOf(o)).indexOf(q) >= 0).slice(0, 40);
+      pick.innerHTML = rows.map(o => '<button data-id="' + o.id + '"><span class="tt">' + E(SC.titleOf(o)) + '</span><span class="when">' + E(U.fmtDay(o.start)) + ' ' + E(U.fmtTime(o.start)) + '</span></button>').join('') ||
+        '<div class="muted" style="padding:6px 9px">No session with that name.</div>';
+    };
+    fill();
+    find.addEventListener('input', fill);
+    dlg.addEventListener('click', e => {
+      const row = e.target.closest('#repPick button[data-id]');
+      const a = e.target.dataset.a;
+      if (row) { SC.closeModal(); SC.markCard(id, 'replaced', row.dataset.id); }
+      else if (a === 'none') { SC.closeModal(); SC.markCard(id, 'replaced', null); }
+      else if (a === 'close') SC.closeModal();
+    });
+  };
+
+  /* The small bar above the selected card: only for cards where a click helps (waiting, stopped, marked, replaced). */
+  SC.renderCardBar = function () {
+    const s = ui.sel && ui.sel.type === 'node' ? SC.data.byId.get(ui.sel.id) : null;
+    const n = s && SC.nodes.get(s.id);
+    const st = s ? SC.stateOf(s) : null;
+    const html = s && n && n.vis && st.key && SC.data.statusOn ? stateButtons(st, false) : '';
+    if (!html) { cardbar.hidden = true; return; }
+    cardbar.innerHTML = '<span class="lbl">' + stateDot(st.key) + E(st.info.zone) + '</span><span class="sep"></span>' + html;
+    cardbar.dataset.id = s.id;
+    cardbar.hidden = false;
+    SC.positionBars();
+  };
+  cardbar.addEventListener('click', e => {
+    const b = e.target.closest('[data-a]');
+    if (b && cardbar.dataset.id) stateAction(cardbar.dataset.id, b.dataset.a);
+  });
+
+  /* "Your turn": everything that waits on you, the one that has waited longest first. Click = go to the card. */
+  SC.renderWaiting = function () {
+    const on = !!SC.data.statusOn, tab = document.querySelector('#layouts button[data-layout="status"]');
+    $('btnWait').hidden = !on;
+    if (tab) tab.hidden = !on;
+    if (!on) { waitEl.hidden = true; return; }
+    const list = SC.waiting();
+    const nq = list.filter(w => w.st.key === 'question').length, ny = list.length - nq;
+    const q = $('waitQ'), y = $('waitY');
+    q.hidden = !nq; q.textContent = nq;
+    y.hidden = !ny; y.textContent = ny;
+    $('btnWait').classList.toggle('on', !!SC.state.settings.waitOpen);
+    $('btnWait').title = (list.length ? nq + ' need your answer, ' + ny + ' are your turn' : 'Nothing waits on you') + ' (press W)';
+    ui.waitOpen = !!SC.state.settings.waitOpen;
+    if (!ui.waitOpen) { waitEl.hidden = true; return; }
+    const today = U.startOfDay(Date.now());
+    const older = list.filter(w => w.st.since < today).length;
+    const top = waitEl.scrollTop;
+    waitEl.innerHTML = '<div class="whead"><b>Waiting on you</b><span class="n">' + list.length + '</span><span class="sp"></span>' +
+      '<button class="linkbtn" data-a="board" title="The Status layout: one zone per state (press 4)">Status board</button>' +
+      '<button class="mini" data-a="close" title="Close (W)">&times;</button></div>' +
+      (list.length ? '<div class="wrows">' + list.map(w => {
+        const r = w.s.report || {};
+        return '<div class="wrow" data-id="' + w.s.id + '" title="Go to this card">' + stateDot(w.st.key) +
+          '<div class="wmain"><div class="wt"><span class="nm">' + E(SC.titleOf(w.s)) + '</span><span class="age">' + E(U.ago(w.st.since).replace(/ ago$/, '')) + '</span></div>' +
+          '<div class="wl">' + E(r.left || r.outcome || '') + '</div></div>' +
+          '<button class="wdone" data-a="done" title="Mark done (undo with ⌘Z)">&#10003;</button></div>';
+      }).join('') + '</div>' : '<div class="wempty">All clear. Nothing waits on you.</div>') +
+      (older ? '<div class="wfoot"><button class="linkbtn" data-a="older" title="For old cards you already dealt with. Undo with ⌘Z.">Mark the ' + older + ' from before today as done</button></div>' : '');
+    waitEl.hidden = false;
+    waitEl.scrollTop = top;
+  };
+  SC.toggleWaiting = function (open) {
+    if (!SC.data.statusOn) return;
+    const st = SC.state.settings;
+    st.waitOpen = open === undefined ? !st.waitOpen : !!open;
+    SC.touch('settings');
+    SC.renderWaiting();
+  };
+  $('btnWait').onclick = () => SC.toggleWaiting();
+  waitEl.addEventListener('click', e => {
+    const a = (e.target.closest('[data-a]') || {}).dataset;
+    const row = e.target.closest('.wrow');
+    if (a && a.a === 'close') { SC.toggleWaiting(false); return; }
+    if (a && a.a === 'board') { SC.setLayout('status'); return; }
+    if (a && a.a === 'older') {
+      const today = U.startOfDay(Date.now());
+      const old = SC.waiting().filter(w => w.st.since < today);
+      if (!old.length) return;
+      SC.checkpoint('mark ' + old.length + ' older done');
+      const marks = Object.assign({}, SC.state.marks);
+      for (const w of old) marks[w.s.id] = { kind: 'done', by: null, at: Date.now(), sig: (w.s.report && w.s.report.sig) || '' };
+      SC.state.marks = marks;
+      SC.touch('marks');
+      SC.reprep();
+      SC.afterStateChange(true);
+      SC.toast(old.length + ' older cards marked done', { action: { label: 'Undo', fn: () => SC.doUndo() } });
+      return;
+    }
+    if (!row) return;
+    if (a && a.a === 'done') { SC.markCard(row.dataset.id, 'done'); return; }
+    SC.jumpToNode(row.dataset.id);
+  });
 
   // ---- send a note to Claude ----
   SC.openSendDialog = function (noteId) {
@@ -858,7 +1040,7 @@
       k('drag', 'move the board (two fingers on the trackpad also work)') +
       k('pinch', 'or the mouse wheel: zoom where the pointer is') +
       k('F', 'show everything') + k('T', 'today / newest session') + k('0', 'back to 100%') + k('+ -', 'zoom in / out') +
-      k('1 2 3', 'Tree / Timeline / Free layout') +
+      (SC.data.statusOn ? k('1 2 3 4', 'Tree / Timeline / Free / Status layout') + k('W', 'the “Your turn” list: what waits on you') : k('1 2 3', 'Tree / Timeline / Free layout')) +
       k('← ↑ → ↓', 'next card in that direction') +
       '</table><p><b>Find</b></p><table class="keys">' +
       k('/', 'search; small typos are fine') + k('Enter', 'next match (Shift+Enter: previous)') + k('Esc', 'clear / close / stop') +
@@ -873,6 +1055,8 @@
       k('N', 'new sticky note (or double-click the board)') +
       k('⌘Z', 'undo (Shift+⌘Z: redo)') + k('R', 'look for new sessions now') +
       '</table></div></div>' +
+      (SC.data.statusOn ? '<p class="muted"><b>Where a card stands</b> comes from its report: ' + SC.STATE_ORDER.map(k => SC.stateDot(k) + ' ' + E(SC.STATES[k].zone.toLowerCase())).join(' &nbsp; ') +
+      '. Click a card for <b>Sent</b>, <b>Mark done</b> or <b>Replaced by…</b> when you already dealt with it (⌘Z undoes it). <b>Status</b> (4) shows one zone per state.</p>' : '') +
       '<p class="muted">In <b>Timeline</b>, drag a card up or down to reorder it inside its day. In <b>Free</b>, drag cards anywhere (hold Shift to bring what hangs below it).</p>' +
       '<p><b>Settings</b></p>' +
       '<p>Open sessions in: ' + ['Terminal', 'iTerm', 'Ghostty'].map(t => '<label><input type="radio" name="term" value="' + t + '"' + (term === t ? ' checked' : '') + '> ' + t + '</label>').join(' &nbsp; ') +
@@ -880,6 +1064,8 @@
       '<p>New sessions start in: <b>' + E(U.homePath(SC.data.defaultCwd, SC.data.home) || '~') + '</b> &nbsp;·&nbsp; Quick start: ' +
       (SC.quickCommands().length ? SC.quickCommands().map(c => '<code>' + E(c) + '</code>').join(' ') : '<span class="muted">none</span>') +
       ' &nbsp;·&nbsp; <button class="linkbtn" data-a="setup">Run setup again</button></p>' +
+      '<p>Status board and reminder: <b>' + (SC.data.statusOn ? 'on' : 'off') + '</b> &nbsp;·&nbsp; <button class="linkbtn" data-a="advanced">Advanced settings</button>' +
+      ' &nbsp;·&nbsp; Version <b>' + E(SC.version) + '</b> <span id="updState" class="muted"></span> <button class="linkbtn" data-a="checkupd">Check for updates</button></p>' +
       '<p><label><input type="checkbox" id="setEdges"' + (SC.state.view.showEdges !== false ? ' checked' : '') + '> Show the link lines between cards</label></p>' +
       '<p><button class="linkbtn" data-a="reseed-tree">Re-arrange the Free layout like the Tree</button> &nbsp;·&nbsp; <button class="linkbtn" data-a="reseed-timeline">like the Timeline</button>' +
       (SC.state.removedEdges.length ? ' &nbsp;·&nbsp; <button class="linkbtn" data-a="restore">Put back ' + SC.state.removedEdges.length + ' removed links</button>' : '') + '</p>' +
@@ -892,6 +1078,21 @@
       const a = e.target.dataset.a;
       if (a === 'close') SC.closeModal();
       if (a === 'setup') { SC.closeModal(); SC.openSetup(1); }
+      if (a === 'advanced') { SC.closeModal(); SC.openAdvanced(); }
+      if (a === 'update') { SC.closeModal(); SC.runUpdate(); }
+      if (a === 'checkupd') {
+        const el = dlg.querySelector('#updState');
+        el.textContent = '· looking…';
+        const show = i => {
+          if (!i) el.textContent = '· could not look (is the Canvas server running?)';
+          else if (!i.enabled) el.textContent = '· not looked for in test mode';
+          else if (i.available && i.canUpdate) el.innerHTML = '· <button class="linkbtn" data-a="update">Update to v' + E(i.latest) + '</button>';
+          else if (i.available) el.textContent = '· v' + i.latest + ' is out (this copy runs from a source folder: update it with git)';
+          else if (i.latest) el.textContent = '· up to date';
+          else el.textContent = '· could not reach GitHub';
+        };
+        SC.checkUpdate(true).then(i => { if (i && i.checking) setTimeout(() => SC.checkUpdate().then(show), 4000); else show(i); });
+      }
       if (a === 'restore') { SC.checkpoint('restore links'); SC.state.removedEdges = []; SC.touch('removedEdges'); SC.invalidate(); SC.afterStateChange(true); SC.closeModal(); SC.toast('Links are back'); }
       if (a === 'reseed-tree' || a === 'reseed-timeline') {
         SC.checkpoint('re-arrange');

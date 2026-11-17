@@ -21,6 +21,8 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
   const F_TITLE = '600 13px ' + FONT, F_META = '11px ' + FONT, F_CHIP = '600 10.5px ' + FONT, F_FOOT = '10.5px ' + FONT,
     F_KIND = '700 9px ' + FONT, F_BIG1 = '700 20px ' + FONT, F_BIG2 = '700 28px ' + FONT, F_BIG3 = '500 17px ' + FONT, F_UI = '600 12px ' + FONT, F_UIS = '11px ' + FONT, F_UIB = '700 12px ' + FONT;
+  const F_ZONE = '700 21px ' + FONT, F_ZHINT = '500 13.5px ' + FONT, F_ZCOUNT = '800 24px ' + FONT;
+  const ZONE_WORLD_Z = 0.5;
   const TOP = 52, STATUS = 24, PANEL_W = 404, TL_HEAD = 46;
   const ZMIN = 0.035, ZMAX = 2.5;
   const LOD_FULL = 0.55, LOD_TITLE = 0.24;      // zoom levels: full card / big title only / coloured block
@@ -71,7 +73,8 @@
   SC.viewRect = function () {
     const head = SC.state.view.layout === 'timeline' ? TL_HEAD : 0;
     const y = TOP + head;
-    return { x: 0, y: y, w: Math.max(200, SC.vw - (SC.ui.panelOpen ? PANEL_W : 0)), h: Math.max(120, SC.vh - y - STATUS) };
+    const left = SC.ui.waitOpen ? 338 : 0;             // the open "Your turn" list covers the left edge
+    return { x: left, y: y, w: Math.max(200, SC.vw - left - (SC.ui.panelOpen ? PANEL_W : 0)), h: Math.max(120, SC.vh - y - STATUS) };
   };
   SC.toWorld = (sx, sy) => ({ x: SC.cam.x + sx / SC.cam.z, y: SC.cam.y + sy / SC.cam.z });
   SC.toScreen = (wx, wy) => ({ x: (wx - SC.cam.x) * SC.cam.z, y: (wy - SC.cam.y) * SC.cam.z });
@@ -114,12 +117,13 @@
   SC.fitAll = function (animate) {
     const b = Object.assign({}, SC.lay.bounds);
     if (SC.lay.type === 'timeline') { b.x0 = 0; b.y0 = 0; b.x1 = Math.max(b.x1, SC.lay.width); b.y1 = Math.max(b.y1, SC.lay.height); }
+    if (SC.lay.type === 'status') { b.x0 = -10; b.y0 = -54; b.x1 = SC.lay.width + 34; b.y1 = SC.lay.height + 10; }
     for (const note of SC.state.notes) {
       const xy = SC.noteXY.get(note.id);
       if (!xy) continue;
       b.x0 = Math.min(b.x0, xy.x); b.y0 = Math.min(b.y0, xy.y); b.x1 = Math.max(b.x1, xy.x + note.w); b.y1 = Math.max(b.y1, xy.y + note.h);
     }
-    SC.fitBounds(b, { animate: animate, padL: SC.lay.type === 'free' ? 0 : 200 });
+    SC.fitBounds(b, { animate: animate, padL: SC.lay.type === 'free' || SC.lay.type === 'status' ? 0 : 200, pad: SC.lay.type === 'status' ? 28 : undefined });
   };
   SC.centerOn = function (n, opts) {
     opts = opts || {};
@@ -141,6 +145,7 @@
   /* The opening view of a layout: readable cards, newest work in sight. */
   SC.homeView = function (animate) {
     const lay = SC.lay, r = SC.viewRect();
+    if (lay.type === 'status') { SC.fitAll(animate); return; }      // the whole board at a glance
     if (lay.type === 'timeline') {
       const z = 0.72;
       const day = lay.dayAt && lay.dayAt.get(lay.today);
@@ -219,7 +224,8 @@
   /* Colours of a card: cheap, needed at every zoom level. */
   function prepColors(n) {
     const s = n.s, T = theme, dark = themeName === 'dark';
-    const accent = SC.accentOf(s);
+    const st = n.st || SC.stateOf(s), byState = SC.lay.type === 'status' && st.info;
+    const accent = byState ? st.info.color : SC.accentOf(s);      // in the Status layout the colour IS the state
     const old = n.prep;
     const p = (old && old.text === textSerial) ? old : { text: textSerial, big: false, full: false };
     p.colors = colorSerial;
@@ -227,7 +233,10 @@
     p.bg = U.mix(T.surface, accent, dark ? 0.2 : 0.12);
     p.block = U.mix(T.surface, accent, dark ? 0.64 : 0.56);
     p.border = U.mix(T.surface, accent, dark ? 0.56 : 0.46);
-    p.stripe = SC.projectColor(s);
+    p.stripe = byState ? st.info.color : SC.projectColor(s);
+    p.st = st;
+    if (byState && st.key === 'replaced') { p.bg = U.mix(T.surface, accent, 0.08); p.block = U.mix(T.surface, accent, 0.3); p.border = U.mix(T.surface, accent, 0.3); }
+    else if (byState && st.key === 'done') { p.bg = U.mix(T.surface, accent, dark ? 0.12 : 0.08); p.block = U.mix(T.surface, accent, dark ? 0.42 : 0.4); p.border = U.mix(T.surface, accent, 0.36); }
     p.kindColor = SC.KIND_COLOR[s.kind] || T.muted;
     n.prep = p;
     return p;
@@ -235,8 +244,9 @@
   /* Large title used when zoomed out. */
   function prepBig(n) {
     const p = n.prep, title = SC.titleOf(n.s);
-    p.tb1 = wrap(F_BIG1, title, n.w - 26, n.compact ? 2 : 4);
-    p.tb2 = wrap(F_BIG2, title, n.w - 26, n.compact ? 2 : 3);
+    const room = n.w - 26 - (p.st && p.st.key ? 30 : 0);          // the state badge sits in the top right corner
+    p.tb1 = wrap(F_BIG1, title, room, n.compact ? 2 : 4);
+    p.tb2 = wrap(F_BIG2, title, room, n.compact ? 2 : 3);
     p.day = U.fmtDay(n.s.start) + ' · ' + n.s.msgs + ' msgs';
     p.big = true;
   }
@@ -246,9 +256,22 @@
     const padL = 15, padR = 10, innerW = n.w - padL - padR;
     const title = SC.titleOf(s);
     p.kindText = (s.run === 'guide' ? 'GUIDE' : SC.KIND_ONE[s.kind] || '').toUpperCase();
-    p.tl = wrap(F_TITLE, title, innerW - (s.active ? 16 : 0), n.compact ? 1 : 2);
+    p.tl = wrap(F_TITLE, title, innerW - (p.st.key ? 20 : 0) - (s.active && p.st.key !== 'running' ? 14 : 0), n.compact ? 1 : 2);
     p.meta = fit(F_META, U.fmtDay(s.start) + ' · ' + U.fmtTime(s.start) + ' · ' + s.msgs + (s.msgs === 1 ? ' msg' : ' msgs'), innerW - tw(F_KIND, p.kindText) - 8);
-    p.about = (!n.compact && p.tl.length === 1 && s.about) ? fit(F_META, s.about.replace(/^.*?→ /, ''), innerW) : '';
+    // the latest: a status pill (helper report) + what it finished / what waits on you, two lines at most
+    const latest = SC.latestOf(s), stInfo = SC.STATES[latest.status];
+    p.stLabel = ''; p.stl = [];
+    if (!n.compact && latest.text) {
+      let lead = 0;
+      if (stInfo) { p.stLabel = stInfo.label; p.stColor = stInfo.color; p.stInk = stInfo.ink; p.stW = Math.ceil(tw(F_KIND, stInfo.label)) + 10; lead = p.stW + 5; }
+      const words = latest.text.split(/\s+/).filter(Boolean);
+      const l1 = wrap(F_META, latest.text, innerW - lead, 2);
+      if (l1.length < 2) p.stl = l1;
+      else p.stl = [l1[0]].concat(wrap(F_META, words.slice(l1[0].split(' ').length).join(' '), innerW, 1));
+    }
+    const hasSt = p.stl.length > 0;
+    // under a one-line title: what was asked (the outcome is on the status lines)
+    p.about = (!n.compact && p.tl.length === 1 && s.about) ? fit(F_META, hasSt && s.about.indexOf(' → ') > 0 ? s.about.split(' → ')[0] : s.about.replace(/^.*?→ /, ''), innerW) : '';
     // chips: your label, commands, keywords, one Jira key
     const items = [];
     const label = SC.state.labels[s.id];
@@ -257,7 +280,7 @@
     for (const k of s.keywords) items.push({ text: k, style: 'kw' });
     if (s.jira.length) items.splice(Math.min(items.length, label ? 4 : 3), 0, { text: s.jira[0], style: 'jira' });
     const chips = [];
-    const maxRows = n.compact ? 1 : 2, rowY = n.compact ? 47 : 65;
+    const maxRows = n.compact || hasSt ? 1 : 2, rowY = n.compact ? 47 : (hasSt ? 88 : 65);
     let x = padL, row = 0;
     for (const it of items) {
       let text = it.text, w = Math.ceil(tw(F_CHIP, text)) + 14;
@@ -316,6 +339,7 @@
     if (S.tokens.length && !S.matches.has(n.id)) a = 0.16;
     if (ui.family && !ui.family.has(n.id)) a = Math.min(a, 0.13);
     if (n.hiddenShown) a = Math.min(a, 0.45);
+    if (n.st && n.st.key === 'replaced' && !(ui.sel && ui.sel.type === 'node' && ui.sel.id === n.id) && ui.hover !== n.id) a = Math.min(a, 0.5);
     return a;
   }
   SC.alphaOf = alphaOf;
@@ -344,6 +368,7 @@
       ak = U.easeOut(Math.min(1, Math.max(0, (now - SC.anim.t0) / SC.anim.dur)));
       if (now - SC.anim.t0 >= SC.anim.dur) { SC.anim = null; ak = 1; } else again = true;
     }
+    spinWanted = false; pulseWanted = false;
     draw(ak);
     const dt = performance.now() - t0;
     const P = SC.perf;
@@ -366,6 +391,7 @@
 
     if (lay.type === 'timeline') drawTimelineBack(vx0, vy0, vx1, vy1, z);
     else if (lay.type === 'tree') drawBandsBack(vx0, vy0, vx1, vy1, z);
+    else if (lay.type === 'status') drawZonesBack(vx0, vy0, vx1, vy1, z);
 
     // where each card is right now (cards slide when the layout changes)
     const list = SC.drawList;
@@ -395,6 +421,7 @@
     ctx.globalAlpha = 1;
     if (lay.type === 'timeline') drawTimelineHead(z);
     else if (lay.type === 'tree') drawBandLabels(z);
+    else if (lay.type === 'status') drawZoneLabels(z);
 
     notesEl.style.transform = 'translate(' + (-cam.x * z) + 'px,' + (-cam.y * z) + 'px) scale(' + z + ')';
     drawMinimap();
@@ -517,6 +544,167 @@
     ctx.fill();
   }
 
+  // ---- where a card stands: one shape per state (so it also reads without colour) ----
+  /* question = diamond with "?", your turn = disc with a "go" triangle, running = ring with a moving arc,
+     not done = square with a cross, done = disc with a tick, replaced = hollow disc with a forward arrow. */
+  SC.glyph = function (c, key, cx, cy, r, breath) {
+    const info = SC.STATES[key];
+    if (!info) return;
+    const col = info.color, ink = info.ink;
+    c.lineCap = 'round'; c.lineJoin = 'round';
+    if (key === 'question') {
+      c.fillStyle = col;
+      c.beginPath(); c.moveTo(cx, cy - r * 1.18); c.lineTo(cx + r * 1.18, cy); c.lineTo(cx, cy + r * 1.18); c.lineTo(cx - r * 1.18, cy); c.closePath(); c.fill();
+      c.fillStyle = ink; c.font = '800 ' + (r * 1.35).toFixed(1) + 'px ' + FONT;
+      const ta = c.textAlign, tb = c.textBaseline;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText('?', cx, cy + r * 0.06);
+      c.textAlign = ta; c.textBaseline = tb;
+    } else if (key === 'your-turn') {
+      c.fillStyle = col;
+      c.beginPath(); c.arc(cx, cy, r, 0, 6.283); c.fill();
+      c.fillStyle = ink;
+      c.beginPath(); c.moveTo(cx - r * 0.3, cy - r * 0.5); c.lineTo(cx + r * 0.55, cy); c.lineTo(cx - r * 0.3, cy + r * 0.5); c.closePath(); c.fill();
+    } else if (key === 'running') {
+      c.strokeStyle = col; c.lineWidth = r * 0.34;
+      const a0 = c.globalAlpha;
+      c.globalAlpha = a0 * 0.3;
+      c.beginPath(); c.arc(cx, cy, r * 0.8, 0, 6.283); c.stroke();
+      c.globalAlpha = a0;
+      const t = pulseOff ? 0.6 : (performance.now() % 1600) / 1600 * 6.283;
+      c.beginPath(); c.arc(cx, cy, r * 0.8, t, t + 2.2); c.stroke();
+      c.fillStyle = col;
+      c.beginPath(); c.arc(cx, cy, r * 0.26, 0, 6.283); c.fill();
+      spinWanted = true;
+    } else if (key === 'not-done') {
+      c.fillStyle = col;
+      rr(c, cx - r * 0.92, cy - r * 0.92, r * 1.84, r * 1.84, r * 0.4); c.fill();
+      c.strokeStyle = ink; c.lineWidth = r * 0.3;
+      c.beginPath(); c.moveTo(cx - r * 0.38, cy - r * 0.38); c.lineTo(cx + r * 0.38, cy + r * 0.38); c.moveTo(cx + r * 0.38, cy - r * 0.38); c.lineTo(cx - r * 0.38, cy + r * 0.38); c.stroke();
+    } else if (key === 'done') {
+      c.fillStyle = col;
+      c.beginPath(); c.arc(cx, cy, r, 0, 6.283); c.fill();
+      c.strokeStyle = ink; c.lineWidth = r * 0.3;
+      c.beginPath(); c.moveTo(cx - r * 0.45, cy + r * 0.02); c.lineTo(cx - r * 0.12, cy + r * 0.36); c.lineTo(cx + r * 0.48, cy - r * 0.32); c.stroke();
+    } else {
+      c.strokeStyle = col; c.lineWidth = r * 0.24;
+      c.beginPath(); c.arc(cx, cy, r * 0.88, 0, 6.283); c.stroke();
+      c.beginPath(); c.moveTo(cx - r * 0.42, cy); c.lineTo(cx + r * 0.4, cy); c.moveTo(cx + r * 0.08, cy - r * 0.34); c.lineTo(cx + r * 0.42, cy); c.lineTo(cx + r * 0.08, cy + r * 0.34); c.stroke();
+    }
+  };
+
+  /* A slow breath (0..1) for the cards that wait on you. Off when the Mac asks for less motion. */
+  const pulseOff = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) || SC.params.has('still');
+  let pulseWanted = false, spinWanted = false;
+  function pulseLevel() { return pulseOff ? 0.55 : 0.5 + 0.5 * Math.sin(performance.now() / 2600 * 6.283); }
+  setInterval(() => {
+    if (pulseOff || document.hidden || !(pulseWanted || spinWanted) || SC.benching) return;
+    SC.requestRender();
+  }, 70);
+
+  // ---- status layout: one zone per state ----
+  function drawZonesBack(vx0, vy0, vx1, vy1, z) {
+    const T = theme, dark = themeName === 'dark', lay = SC.lay, ZS = L.ST;
+    const breath = pulseLevel();
+    const world = z >= ZONE_WORLD_Z;                   // close enough to read the zone's own heading
+    for (const zn of lay.zones) {
+      if (zn.x1 + 40 < vx0 || zn.x0 - 40 > vx1) continue;
+      const col = zn.info.color, calm = zn.key === 'done' || zn.key === 'replaced';
+      const w = zn.x1 - zn.x0, h = zn.y1 - zn.y0;
+      // the lane
+      ctx.globalAlpha = (dark ? 0.075 : 0.085) * (calm ? 0.75 : 1);
+      ctx.fillStyle = col;
+      rr(ctx, zn.x0, zn.y0, w, h, 22);
+      ctx.fill();
+      // its heading band
+      ctx.globalAlpha = (dark ? 0.17 : 0.2) * (zn.count ? 1 : 0.6);
+      rr(ctx, zn.x0, zn.y0, w, ZS.HEAD - 22, [22, 22, 0, 0]);
+      ctx.fill();
+      ctx.globalAlpha = zn.count ? (calm ? 0.45 : 0.8) : 0.3;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = Math.max(calm ? 1.2 : 2, (calm ? 1.2 : 2) / z);
+      rr(ctx, zn.x0, zn.y0, w, h, 22);
+      ctx.stroke();
+      if (zn.info.wait && zn.count) {                  // the lanes that wait on you glow gently
+        ctx.globalAlpha = 0.08 + 0.2 * breath;
+        ctx.lineWidth = Math.max(10, 9 / z);
+        rr(ctx, zn.x0 - 4, zn.y0 - 4, w + 8, h + 8, 26);
+        ctx.stroke();
+        pulseWanted = true;
+      }
+      ctx.globalAlpha = 1;
+      if (world) {
+        SC.glyph(ctx, zn.key, zn.x0 + ZS.PAD + 15, zn.y0 + 33, 15, breath);
+        ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+        ctx.font = F_ZONE;
+        ctx.fillStyle = T.text;
+        ctx.fillText(fit(F_ZONE, zn.info.zone, w - ZS.PAD - 40 - 14), zn.x0 + ZS.PAD + 40, zn.y0 + 40);
+        ctx.font = F_ZHINT;
+        ctx.fillStyle = T.muted;
+        const hint = zn.key === 'done' || zn.key === 'replaced' || zn.key === 'not-done' ? zn.info.hint + ' · last ' + lay.days + ' days' : zn.info.hint;
+        ctx.fillText(fit(F_ZHINT, hint, w - ZS.PAD * 2), zn.x0 + ZS.PAD, zn.y0 + 66);
+        // how many: a badge on the corner, like the red dot on an app
+        const txt = String(zn.count);
+        ctx.font = F_ZCOUNT;
+        const bw = Math.max(44, ctx.measureText(txt).width + 26);
+        ctx.fillStyle = zn.count ? col : (dark ? '#2a3443' : '#d5dce7');
+        rr(ctx, zn.x1 - bw + 14, zn.y0 - 16, bw, 44, 22);
+        ctx.fill();
+        ctx.fillStyle = zn.count ? zn.info.ink : T.muted;
+        ctx.textAlign = 'center';
+        ctx.fillText(txt, zn.x1 - bw / 2 + 14, zn.y0 + 15);
+        ctx.textAlign = 'left';
+      }
+      if (!zn.count && z > 0.3) {
+        ctx.font = F_ZHINT;
+        ctx.fillStyle = T.faint;
+        ctx.textAlign = 'center';
+        ctx.fillText(zn.info.wait ? 'All clear' : 'Nothing here', (zn.x0 + zn.x1) / 2, zn.y0 + ZS.HEAD + 50);
+        ctx.textAlign = 'left';
+      }
+    }
+  }
+  /* Far away (or scrolled past the heading): the zone names stay readable as pills pinned to the top of each zone. */
+  function drawZoneLabels(z) {
+    const T = theme, cam = SC.cam, lay = SC.lay;
+    ctx.textBaseline = 'alphabetic';
+    for (const zn of lay.zones) {
+      const sx0 = (zn.x0 - cam.x) * z, sx1 = (zn.x1 - cam.x) * z;
+      const sy0 = (zn.y0 - cam.y) * z, sy1 = (zn.y1 - cam.y) * z;
+      const headGone = sy0 + (L.ST.HEAD - 30) * z < TOP;
+      if (z >= ZONE_WORLD_Z && !headGone) continue;
+      if (sx1 < 0 || sx0 > SC.vw || sy1 < TOP + 30 || sy0 > SC.vh) continue;
+      const wide = sx1 - sx0;
+      ctx.font = F_UIB;
+      const count = String(zn.count);
+      let label = zn.info.zone;
+      let tw0 = ctx.measureText(label).width, cw = ctx.measureText(count).width + 14;
+      let pw = 30 + tw0 + 8 + cw + 6;
+      if (pw > wide + 6) { label = ''; pw = 26 + cw + 6; }          // a narrow zone far away: shape + count only
+      const x = U.clamp(sx0 + (wide - pw) / 2, Math.min(8, sx1 - pw), Math.max(sx1 - pw, 8));
+      const y = U.clamp(sy0 - 34, TOP + 6, Math.max(TOP + 6, sy1 - 30));
+      ctx.globalAlpha = zn.count ? 1 : 0.6;
+      ctx.fillStyle = T.pill;
+      rr(ctx, x, y, pw, 26, 13);
+      ctx.fill();
+      ctx.strokeStyle = zn.info.color; ctx.lineWidth = zn.count && zn.info.wait ? 2 : 1.2; ctx.stroke();
+      SC.glyph(ctx, zn.key, x + 14, y + 13, 7.5, 0.5);
+      ctx.font = F_UIB;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = T.text;
+      if (label) ctx.fillText(label, x + 27, y + 17.5);
+      const cx = x + pw - cw - 5;
+      ctx.fillStyle = zn.count ? zn.info.color : T.border;
+      rr(ctx, cx, y + 4, cw, 18, 9);
+      ctx.fill();
+      ctx.fillStyle = zn.count ? zn.info.ink : T.muted;
+      ctx.textAlign = 'center';
+      ctx.fillText(count, cx + cw / 2, y + 17.5);
+      ctx.textAlign = 'left';
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // ---- cards ----
   function drawCards(list, z) {
     const T = theme, dark = themeName === 'dark';
@@ -547,6 +735,43 @@
       rr(ctx, x + lw / 2, y + lw / 2, n.w - lw, n.h - lw, 10);
       ctx.stroke();
     }
+    // where each card stands, readable at every zoom level:
+    //   waiting on you = a frame in the state's colour with a soft breathing glow; stopped = a dashed red frame;
+    //   far away the waiting ones also get a filled corner. Done and replaced stay calm.
+    const breath = pulseLevel();
+    let waitingOn = 0;
+    for (const n of list) {
+      const st = n.prep.st;
+      if (!st.key || st.key === 'done' || st.key === 'replaced' || st.key === 'running') continue;
+      const col = st.info.color;
+      ctx.strokeStyle = col;
+      if (st.info.wait) {
+        waitingOn++;
+        ctx.globalAlpha = n.a * (0.10 + 0.30 * breath);
+        ctx.lineWidth = Math.max(9, 8 / z);
+        rr(ctx, n.rx - 3, n.ry - 3, n.w + 6, n.h + 6, 13);
+        ctx.stroke();
+        ctx.globalAlpha = n.a;
+        ctx.lineWidth = Math.max(2.5, 2.5 / z);
+        rr(ctx, n.rx - 1, n.ry - 1, n.w + 2, n.h + 2, 11);
+        ctx.stroke();
+        if (lod === 0) {                                  // a far-away block: a filled corner says "this one"
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          ctx.moveTo(n.rx + n.w - 96, n.ry); ctx.lineTo(n.rx + n.w, n.ry); ctx.lineTo(n.rx + n.w, n.ry + 96);
+          ctx.closePath();
+          ctx.fill();
+        }
+      } else {
+        ctx.globalAlpha = n.a * 0.9;
+        ctx.lineWidth = Math.max(1.6, 1.6 / z);
+        ctx.setLineDash([7 * Math.max(1, 0.6 / z), 5 * Math.max(1, 0.6 / z)]);
+        rr(ctx, n.rx - 1, n.ry - 1, n.w + 2, n.h + 2, 11);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    if (waitingOn) pulseWanted = true;
     if (lod === 0) { ctx.globalAlpha = 1; return; }
 
     ctx.textBaseline = 'alphabetic';
@@ -570,6 +795,11 @@
         ctx.globalAlpha = n.a;
         ctx.fillText(n.prep.day, n.rx + 15, n.ry + n.h - 13);
       }
+      for (const n of list) {
+        if (!n.prep.st.key) continue;
+        ctx.globalAlpha = n.a;
+        SC.glyph(ctx, n.prep.st.key, n.rx + n.w - 24, n.ry + 24, 15, breath);
+      }
       ctx.globalAlpha = 1;
       return;
     }
@@ -589,6 +819,26 @@
       ctx.globalAlpha = n.a;
       ctx.fillText(n.prep.meta, n.rx + 15, n.ry + (n.compact ? 38 : 56));
       if (n.prep.about) ctx.fillText(n.prep.about, n.rx + 15, n.ry + 39);
+    }
+    // 3b. the latest: status pill + text
+    for (const n of list) {
+      const p = n.prep;
+      if (!p.stl.length) continue;
+      ctx.globalAlpha = n.a;
+      let x = n.rx + 15;
+      if (p.stLabel) {
+        ctx.fillStyle = p.stColor;
+        rr(ctx, x, n.ry + 61, p.stW, 12, 6);
+        ctx.fill();
+        ctx.font = F_KIND;
+        ctx.fillStyle = p.stInk || '#10151d';
+        ctx.fillText(p.stLabel, x + 5, n.ry + 70.5);
+        x += p.stW + 5;
+      }
+      ctx.font = F_META;
+      ctx.fillStyle = p.stLabel ? T.text : T.muted;
+      ctx.fillText(p.stl[0], x, n.ry + 70.5);
+      if (p.stl[1]) ctx.fillText(p.stl[1], n.rx + 15, n.ry + 83.5);
     }
     // 4. type of session
     ctx.font = F_KIND;
@@ -625,11 +875,14 @@
     for (const n of list) {
       ctx.globalAlpha = n.a;
       if (n.prep.footer) { ctx.fillStyle = T.faint; ctx.fillText(n.prep.footer, n.rx + 15, n.ry + n.h - 10); }
-      if (n.s.active) {
+      const sk = n.prep.st.key;
+      if (sk) SC.glyph(ctx, sk, n.rx + n.w - 16, n.ry + 16, 8.5, breath);
+      if (n.s.active && sk !== 'running') {               // open in a window right now (and not simply "running")
+        const lx = n.rx + n.w - (sk ? 33 : 13);
         ctx.fillStyle = '#2fc98a';
-        ctx.beginPath(); ctx.arc(n.rx + n.w - 13, n.ry + 14, 4.5, 0, 6.283); ctx.fill();
+        ctx.beginPath(); ctx.arc(lx, n.ry + 16, 4, 0, 6.283); ctx.fill();
         ctx.strokeStyle = 'rgba(47,201,138,0.35)'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(n.rx + n.w - 13, n.ry + 14, 7, 0, 6.283); ctx.stroke();
+        ctx.beginPath(); ctx.arc(lx, n.ry + 16, 6.5, 0, 6.283); ctx.stroke();
       }
       if (isTree) {
         const k = SC.kidCount(n.id);
@@ -876,6 +1129,7 @@
     mctx.fillRect(0, 0, W, H);
     const b = Object.assign({}, lay.bounds);
     if (lay.type === 'timeline') { b.x0 = 0; b.y0 = 0; b.x1 = Math.max(b.x1, lay.width); b.y1 = Math.max(b.y1, lay.height); }
+    if (lay.type === 'status') { b.x0 = 0; b.y0 = 0; b.x1 = lay.width; b.y1 = lay.height; }
     // always include what the person is looking at, so the view box never leaves the map
     const vx0 = cam.x, vy0 = cam.y, vx1 = cam.x + SC.vw / cam.z, vy1 = cam.y + SC.vh / cam.z;
     const bw = Math.max(1, b.x1 - b.x0), bh = Math.max(1, b.y1 - b.y0);
@@ -883,6 +1137,13 @@
     const ox = (W - bw * k) / 2 - b.x0 * k, oy = (H - bh * k) / 2 - b.y0 * k;
     SC.mini = { k: k, ox: ox, oy: oy };
     const S = SC.search, searching = S.tokens.length > 0;
+    if (lay.type === 'status') {
+      for (const zn of lay.zones) {
+        mctx.globalAlpha = 0.2;
+        mctx.fillStyle = zn.info.color;
+        mctx.fillRect(ox + zn.x0 * k, oy + zn.y0 * k, (zn.x1 - zn.x0) * k, (zn.y1 - zn.y0) * k);
+      }
+    }
     for (const n of lay.shown) {
       const p = ready(n, 0);
       const hit = searching && S.matches.has(n.id);
