@@ -308,7 +308,7 @@ class UpdateAndAdvancedApi(ApiCase):
         self.assertTrue(self.get('/api/sessions')[1]['statusOn'])                   # on at once, no restart
         w = self.get('/api/waiting')[1]['waiting']
         self.assertEqual([(x['id'], x['state'], x['file']) for x in w], [(self.ids[0], 'question', os.path.join('reports', day, 'ask.md'))])
-        self.post('/api/state', {'patch': {'settings': {'setupDone': True}}})
+        self.post('/api/state', {'patch': {'settings': {'setupDone': True, 'reportFolders': None}}})   # settings merge: None removes one
         self.assertFalse(self.get('/api/sessions')[1]['statusOn'])
         self.assertEqual(self.get('/api/waiting')[1]['waiting'], [])
 

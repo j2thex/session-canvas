@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.2 (2026-11-17)
+
+- Fix: a board tab left open from an older version could wipe your Advanced settings (report folders,
+  reminder) when it saved. Settings are now merged on save, never replaced.
+
 ## 1.2.1 (2026-11-17)
 
 - Your own shell lines can run in every window the board opens: put them in

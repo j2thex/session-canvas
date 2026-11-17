@@ -73,6 +73,14 @@ class StatePersistence(TempCase):
         st = s.get()
         self.assertEqual((st['titles'], st['hidden'], st['rev']), ({'a': 'A'}, [], 2))
 
+    def test_settings_merge_so_an_old_tab_cannot_wipe_them(self):
+        s = server.StateStore(self.path())
+        s.patch({'settings': {'terminal': 'Ghostty', 'reportFolders': ['/r'], 'remindMin': 30}})
+        s.patch({'settings': {'terminal': 'iTerm', 'waitOpen': True}})      # an older page that knows only two settings
+        s.patch({'settings': {'remindMin': None}})                          # None removes one
+        self.assertEqual(server.StateStore(self.path()).get()['settings'],
+                         {'terminal': 'iTerm', 'reportFolders': ['/r'], 'waitOpen': True})
+
     def test_rejects_unknown_keys_and_wrong_shapes(self):
         s = server.StateStore(self.path())
         for bad in ({}, None, {'nope': 1}, {'notes': {}}, {'titles': []}, {'view': 'x'}, {'rev': 5}):

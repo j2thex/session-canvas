@@ -219,7 +219,7 @@ class StateStore(object):
             return json.loads(json.dumps(self.state))
 
     def patch(self, patch):
-        """Replace whole top-level keys (e.g. {'notes': [...]}); returns the new revision number."""
+        """Replace whole top-level keys (e.g. {'notes': [...]}), except settings, which are merged; returns the new revision."""
         if not isinstance(patch, dict) or not patch:
             raise UserError('Nothing to save.')
         for k, v in patch.items():
@@ -229,6 +229,15 @@ class StateStore(object):
                 raise UserError('Wrong shape for %s.' % k)
         with self.lock:
             for k, v in patch.items():
+                if k == 'settings' and isinstance(self.state.get('settings'), dict):
+                    # merge, never replace: an older open tab must not wipe settings it doesn't know (None deletes a key)
+                    merged = dict(self.state['settings'])
+                    for sk, sv in v.items():
+                        if sv is None:
+                            merged.pop(sk, None)
+                        else:
+                            merged[sk] = sv
+                    v = merged
                 self.state[k] = v
             self.state['rev'] = int(self.state.get('rev') or 0) + 1
             self.state['savedAt'] = int(time.time() * 1000)
