@@ -368,14 +368,18 @@ class Spawner(object):
             with os.fdopen(fd, 'w', encoding='utf-8') as fh:
                 fh.write(prompt)
             cmd += ' "$(cat %s)"' % q(prompt_file)
+        # Optional: your own lines to run in every window the board opens (colours, environment), if the file exists
+        hook = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(self.launch_dir))), 'before-session.zsh')
+        extra = '[[ -r %s ]] && source %s\n' % (q(hook), q(hook)) if os.path.isfile(hook) else ''
         script = (
             '#!/bin/zsh -l\n'
             '# Session Canvas launcher (made %s). Opens one Claude Code session. Safe to delete.\n'
             '# Start clean: this must be its own top-level session even if the Canvas was started from inside Claude.\n'
             'for v in ${(k)parameters[(I)CLAUDE*]} AI_AGENT; do [[ $v == CLAUDE_CODE_PLUGIN_DIRS ]] || unset $v; done\n'
+            '%s'
             'cd %s || { print -r -- "Session Canvas: folder not found"; exit 1; }\n'
             'exec %s\n'
-        ) % (time.strftime('%Y-%m-%d %H:%M:%S'), q(cwd), cmd)
+        ) % (time.strftime('%Y-%m-%d %H:%M:%S'), extra, q(cwd), cmd)
         fd = os.open(launcher, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
             fh.write(script)

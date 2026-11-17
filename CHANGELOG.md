@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1 (2026-11-17)
+
+- Your own shell lines can run in every window the board opens: put them in
+  `~/.session-canvas/data/before-session.zsh` (for example a window colour).
+
 ## 1.2.0 (2026-11-17)
 
 Updates, and everything built since 1.0.1 in one place.

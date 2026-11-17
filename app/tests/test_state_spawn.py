@@ -292,5 +292,25 @@ class Spawn(TempCase):
         self.assertTrue(os.path.exists(p['launcher']))
 
 
+class LauncherHook(unittest.TestCase):
+    def test_before_session_file_is_sourced_only_when_it_exists(self):
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix='canvas-hook-'))
+        try:
+            work = os.path.join(tmp, 'work')
+            os.makedirs(work)
+            sp = server.Spawner(os.path.join(tmp, 'data', 'cache', 'launch'), claude_bin='/bin/echo', default_cwd=work, dry_run=True)
+            with open(sp.plan({'action': 'new'})['launcher']) as fh:
+                self.assertNotIn('before-session', fh.read())
+            hook = os.path.join(tmp, 'data', 'before-session.zsh')
+            with open(hook, 'w') as fh:
+                fh.write('export CANVAS_HOOK=1\n')
+            with open(sp.plan({'action': 'new'})['launcher']) as fh:
+                text = fh.read()
+            self.assertIn('[[ -r %s ]] && source %s\n' % (hook, hook), text)
+            self.assertLess(text.index('before-session'), text.index('exec '))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -71,6 +71,9 @@ session-canvas version    # which version is installed
 session-canvas --dry-run  # test mode: buttons show the command instead of opening a window
 ```
 
+If you want your own shell lines to run in every window the board opens (a window colour, an environment
+variable), put them in `~/.session-canvas/data/before-session.zsh`.
+
 The board lives at http://127.0.0.1:7788/ while it runs. Press **?** on the board for all shortcuts.
 
 ## Status reports (optional)
