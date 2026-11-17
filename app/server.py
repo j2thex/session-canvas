@@ -52,7 +52,8 @@ Status reports (optional, off until a report folder is set under ? -> Settings -
       sent: <link>                  what the card waited for was sent -> done
       replaces: slug, slug          this session took over from those -> their cards grey out
       replaced-by: slug             a newer session took over from this one
-  The person can also press Done / Sent / Replaced by on a card (kept in state.json under "marks").
+  The person can also press Done / Sent / Replaced by on a card (kept in state.json under "marks" and written into
+  the report file itself; undo puts the report back if nobody changed it since).
   GET /api/waiting (add ?format=text for plain lines) lists every card that waits on the person, oldest
   first, so a script can read it instead of looking at the board.
 
@@ -76,6 +77,7 @@ Python 3.9 standard library only.
 """
 import argparse
 import collections
+import hashlib
 import json
 import os
 import re
@@ -155,6 +157,13 @@ STATE_KEYS = {
     'marks': dict,
 }
 
+
+
+def _atomic_write(path, text):
+    tmp = '%s.tmp-%d-%d' % (path, os.getpid(), threading.get_ident())
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    os.replace(tmp, path)
 
 class UserError(Exception):
     """A problem to show to the person in plain words (HTTP 400)."""
@@ -769,6 +778,108 @@ class App(object):
         self.updates = None                   # set by start_updates(); never in dry-run mode or in tests
         self.update_proc = None
 
+    # --- Board buttons write into the report file, so HQ, the board and the session read the same thing ---
+    MARK_WORD = {'done': 'Done', 'sent': 'Sent', 'replaced': 'Replaced'}
+
+    def _edits_path(self):
+        return os.path.join(os.path.dirname(os.path.abspath(self.args.state)), 'report-edits.json')
+
+    def _load_edits(self):
+        try:
+            with open(self._edits_path(), encoding='utf-8') as fh:
+                d = json.load(fh)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_edits(self, d):
+        _atomic_write(self._edits_path(), json.dumps(d, ensure_ascii=False, indent=1))
+
+    def _report_path(self, sess):
+        """The report file of a session, only when it sits inside a configured report folder."""
+        rep = (sess or {}).get('report') or {}
+        f = rep.get('file')
+        if not isinstance(f, str) or not f:
+            return None
+        p = f if os.path.isabs(f) else os.path.join(self.index.work_root or '', f)
+        rp = os.path.realpath(p)
+        for d in self.index.report_dirs or []:
+            if rp.startswith(os.path.realpath(d) + os.sep) and rp.endswith('.md') and os.path.isfile(rp):
+                return rp
+        return None
+
+    @staticmethod
+    def edit_report_text(text, kind, by_token='', when=''):
+        """The report with its header turned into done: status line set, plus a sent / replaced-by / marked line."""
+        lines = text.split('\n')
+        head = min(len(lines), 12)
+        si = next((i for i in range(head) if re.match(r'^status\s*:', lines[i], re.I)), None)
+        if si is None:
+            lines.insert(0, 'status: done')
+            si, head = 0, head + 1
+        else:
+            lines[si] = 'status: done'
+        last = si
+        for i in range(si, head):
+            if re.match(r'^(name|outcome|left)\s*:', lines[i], re.I):
+                last = i
+        if kind == 'sent':
+            extra = 'sent: marked Sent on the board, %s' % when
+        elif kind == 'replaced':
+            extra = 'replaced-by: %s' % (by_token or 'a newer session')
+        else:
+            extra = 'marked: Done on the board, %s' % when
+        lines.insert(last + 1, extra)
+        return '\n'.join(lines)
+
+    def marks_to_reports(self, old, new):
+        """Write each new board mark into its report; put the report back when a mark is undone
+        (only if nobody changed the file since). Returns True when a file changed. Never in dry-run mode."""
+        if self.dry_run or not (self.index.report_dirs or []):
+            return False
+        sessions = {x.get('id'): x for x in ((self.index.payload() or {}).get('sessions') or [])}
+        edits = self._load_edits()
+        changed = False
+        when = time.strftime('%-d %b %H:%M')
+        for sid in sorted(set(old) | set(new)):
+            o, n = old.get(sid), new.get(sid)
+            if o == n:
+                continue
+            had = edits.get(sid)
+            valid = isinstance(n, dict) and n.get('kind') in self.MARK_WORD
+            if had and (not valid or had.get('kind') != n.get('kind')):
+                try:
+                    with open(had['file'], encoding='utf-8') as fh:
+                        cur = fh.read()
+                    if hashlib.sha256(cur.encode('utf-8')).hexdigest() == had.get('after'):
+                        _atomic_write(had['file'], had['before'])
+                        changed = True
+                except (OSError, KeyError):
+                    pass
+                edits.pop(sid, None)
+            if not valid or sid in edits:
+                continue
+            path = self._report_path(sessions.get(sid))
+            if not path:
+                continue
+            token = ''
+            if n['kind'] == 'replaced':
+                tgt = sessions.get(n.get('by')) or {}
+                tp = self._report_path(tgt)
+                token = os.path.splitext(os.path.basename(tp))[0] if tp else (tgt.get('name') or '')
+            try:
+                with open(path, encoding='utf-8') as fh:
+                    before = fh.read()
+                after = self.edit_report_text(before, n['kind'], token, when)
+                _atomic_write(path, after)
+            except OSError:
+                continue
+            edits[sid] = {'file': path, 'kind': n['kind'], 'before': before,
+                          'after': hashlib.sha256(after.encode('utf-8')).hexdigest()}
+            changed = True
+        self._save_edits(edits)
+        return changed
+
     def waiting(self):
         """Every card that waits on the person (oldest first), after the marks made on the board."""
         sessions = (self.index.payload() or {}).get('sessions') or []
@@ -1106,7 +1217,10 @@ class Handler(BaseHTTPRequestHandler):
             body.pop('token', None)
             path = urlparse(self.path).path
             if path == '/api/state':
+                before = app.store.get().get('marks') or {}
                 rev = app.store.patch(body.get('patch'))
+                if 'marks' in (body.get('patch') or {}) and app.marks_to_reports(before, app.store.get().get('marks') or {}) and app.ready():
+                    app.rescan()                 # the report files changed: read them now
                 if 'settings' in (body.get('patch') or {}) and app.apply_settings() and app.ready():
                     app.rescan()                 # report folders changed: read the reports now
                 return self._send(200, {'ok': True, 'rev': rev})

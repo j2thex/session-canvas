@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.3 (2026-11-17)
+
+- **Sent / Mark done / Replaced by now write into the report file** (`status: done` plus a `sent:`, `replaced-by:`
+  or `marked:` line), so helpers, your planner and the board all read the same thing. Undo puts the report back,
+  unless the helper rewrote it in the meantime. Only files inside your report folders are touched; never in test mode.
+
 ## 1.2.2 (2026-11-17)
 
 - Fix: a board tab left open from an older version could wipe your Advanced settings (report folders,

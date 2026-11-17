@@ -102,7 +102,9 @@ The board matches a report to its session in one of three ways: the session's fi
 session's title on the same day; or a `runs.tsv` in the day folder lists them (tab-separated: first 8 characters
 of the session id, name, kind, model, skill, time, report path).
 
-On the board you can also press **Sent**, **Mark done** or **Replaced by…** on a card yourself.
+On the board you can also press **Sent**, **Mark done** or **Replaced by…** on a card yourself. The button writes into the
+report file too (`status: done` plus a `sent:`, `replaced-by:` or `marked:` line), so whoever reads the reports sees it;
+undo (Cmd+Z) puts the report back, unless the helper has rewritten it since.
 A script can read what waits on you: `curl -s 'http://127.0.0.1:7788/api/waiting?format=text'`.
 
 **Reminder** (also under Advanced settings): the full path of a script of yours. When a card has waited on you

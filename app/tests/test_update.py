@@ -312,6 +312,46 @@ class UpdateAndAdvancedApi(ApiCase):
         self.assertFalse(self.get('/api/sessions')[1]['statusOn'])
         self.assertEqual(self.get('/api/waiting')[1]['waiting'], [])
 
+    def test_board_buttons_write_into_the_report_and_undo_puts_it_back(self):
+        day = time.strftime('%Y-%m-%d', time.localtime(time.time()))
+        d = os.path.join(self.work, 'reports', day)
+        os.makedirs(d)
+        rep = os.path.join(d, 'fixes.md')
+        text = 'status: your-turn\nname: Fixes\noutcome: draft saved\nleft: Sam sends it\n\nmore notes\n'
+        with open(rep, 'w') as fh:
+            fh.write(text)
+        with open(os.path.join(d, 'runs.tsv'), 'w') as fh:
+            fh.write('%s\tFixes\tjob\tsonnet\t-\t10:30\t%s\n' % (self.ids[0][:8], rep))
+        self.post('/api/state', {'patch': {'settings': {'setupDone': True, 'reportFolders': [os.path.join(self.work, 'reports')]}}})
+        self.assertEqual(len(self.get('/api/waiting')[1]['waiting']), 1)
+        self.app.dry_run = False                                                     # test servers are dry runs; this part writes files
+        try:
+            sid = self.ids[0]
+            self.post('/api/state', {'patch': {'marks': {sid: {'kind': 'sent', 'at': 1}}}})
+            with open(rep) as fh:
+                got = fh.read()
+            self.assertTrue(got.startswith('status: done\nname: Fixes\noutcome: draft saved\nleft: Sam sends it\nsent: marked Sent on the board, '), got)
+            self.assertIn('more notes', got)
+            self.assertEqual(self.get('/api/waiting')[1]['waiting'], [])
+            self.post('/api/state', {'patch': {'marks': {}}})                          # undo
+            with open(rep) as fh:
+                self.assertEqual(fh.read(), text)
+            self.assertEqual(len(self.get('/api/waiting')[1]['waiting']), 1)
+            # a helper rewrote the report after the mark: undo leaves the helper's version alone
+            self.post('/api/state', {'patch': {'marks': {sid: {'kind': 'done', 'at': 2}}}})
+            with open(rep) as fh:
+                self.assertIn('marked: Done on the board, ', fh.read())
+            with open(rep, 'w') as fh:
+                fh.write('status: your-turn\nname: Fixes\nleft: new ask\n')
+            self.post('/api/state', {'patch': {'marks': {}}})
+            with open(rep) as fh:
+                self.assertEqual(fh.read(), 'status: your-turn\nname: Fixes\nleft: new ask\n')
+        finally:
+            self.app.dry_run = True
+            self.post('/api/state', {'patch': {'settings': {'reportFolders': None}, 'marks': {}}})   # the server is shared by the tests
+            shutil.rmtree(os.path.join(self.work, 'reports'), ignore_errors=True)
+            self.app.rescan()
+
     def test_the_reminder_command_gets_one_argument(self):
         out = os.path.join(self.tmp, 'said.txt')
         script = os.path.join(self.tmp, 'notify me.sh')
