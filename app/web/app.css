@@ -274,7 +274,7 @@ kbd { font: 11px var(--mono); background: var(--panel2); border: 1px solid var(-
 
 /* narrow windows: drop the least needed controls first */
 @media (max-width: 1500px) { .brand .name { display: none; } }
-@media (max-width: 1360px) { #btnToday, .sel { display: none; } }
+@media (max-width: 1360px) { #btnToday, #top .sel { display: none; } }
 @media (max-width: 1180px) { #btnUndo, #btnHelp { display: none; } }
 @media (max-width: 980px) { #btnFit, #btnRescan, .group { display: none; } #legend { display: none; } }
 

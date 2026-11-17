@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.4 (2026-11-18)
+
+- Fix: on a browser window narrower than 1360px, a sticky note vanished while selected (it could still be
+  dragged, and reappeared when you clicked away). A toolbar rule that hides controls on narrow windows also
+  matched selected notes; it now applies to the toolbar only.
+
 ## 1.2.3 (2026-11-17)
 
 - **Sent / Mark done / Replaced by now write into the report file** (`status: done` plus a `sent:`, `replaced-by:`

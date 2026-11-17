@@ -9,10 +9,10 @@ Open https://github.com/j2thex/session-canvas/releases/latest and click the zip 
 (`session-canvas-<version>-<date>.zip`). It lands in **Downloads**.
 
 ## 2. Unzip and install
-1. Double-click the zip in Downloads. You get a folder like `session-canvas-1.2.3`.
+1. Double-click the zip in Downloads. You get a folder like `session-canvas-1.2.4`.
 2. Open **Terminal** (Cmd+Space, type "Terminal", Enter) and paste these two lines (use the folder name you got):
    ```sh
-   cd ~/Downloads/session-canvas-1.2.3
+   cd ~/Downloads/session-canvas-1.2.4
    ./install.sh
    ```
    If it says "permission denied", run `zsh install.sh` instead.
